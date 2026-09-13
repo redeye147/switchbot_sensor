@@ -20,19 +20,14 @@ strip_dist_packages()
 
 from bluepy.btle import Scanner, DefaultDelegate, BTLEException  # noqa: E402
 
-DEVICE_TYPE_CONTACT = 0x64  # 開閉センサー = 'd'
-
+from contact_protocol import DOOR_STATE_NAMES, parse_contact
 
 class ScanDelegate(DefaultDelegate):
     def __init__(self, macaddr):
         DefaultDelegate.__init__(self)
         self.macaddr = macaddr.lower()          # bluepy は小文字で返す
         self.prev_button_count = None           # 未観測を None で表す
-        self.output = {                         # dict で初期化 (元コードは list でバグ)
-            "found": False,
-            "isIlluminance": 0, "isOpen": 0, "isLeaveOpen": 0,
-            "time": 0, "buttonCount": 0, "isButton": 0, "battery": 0,
-        }
+        self.output = {"found": False}          # dict で初期化 (元コードは list でバグ)
         self._scanner = Scanner().withDelegate(self)
 
     def handleDiscovery(self, dev, isNewDev, isNewData):
@@ -46,30 +41,15 @@ class ScanDelegate(DefaultDelegate):
                 servicedata = bytes.fromhex(value[4:])   # 先頭2バイトの UUID を捨てる
             except ValueError:
                 continue
-            if len(servicedata) < 9:
-                continue
-            if (servicedata[0] & 0x7F) != DEVICE_TYPE_CONTACT:
+
+            data = parse_contact(servicedata)
+            if data is None:
                 continue                        # 開閉センサー以外のパケットは無視
 
-            battery       = servicedata[2] & 0b01111111        # バッテリー残量 %
-            isIlluminance =  servicedata[3] & 0b00000001       # 明るい=1 / 暗い=0
-            isOpen        = (servicedata[3] & 0b00000010) >> 1  # 開=1 / 閉=0
-            isLeaveOpen   = (servicedata[3] & 0b00000100) >> 2  # 開けっ放し=1
-            open_seconds  =  servicedata[7]                     # 開けっ放し経過秒
-            buttonCount   =  servicedata[8] & 0b00001111        # 1..15 で循環
-
-            isButton = self._detect_press(buttonCount)
-
-            self.output = {
-                "found": True,
-                "isIlluminance": isIlluminance,
-                "isOpen": isOpen,
-                "isLeaveOpen": isLeaveOpen,
-                "time": open_seconds,
-                "buttonCount": buttonCount,
-                "isButton": isButton,
-                "battery": battery,
-            }
+            data["isButton"] = self._detect_press(data["buttonCount"])
+            data["found"] = True
+            self.output = data
+            return
 
     def _detect_press(self, count):
         """循環カウンタ (1..15) の差分でボタン押下を検出する。"""
@@ -106,13 +86,13 @@ if __name__ == '__main__':
             print("-----------")
             continue
 
-        print("isIlluminance:", out["isIlluminance"])  # 明るい=1 暗い=0
-        print("isOpen:",        out["isOpen"])         # 開=1 閉=0
-        print("isLeaveOpen:",   out["isLeaveOpen"])    # 開けっ放し=1
-        print("time:",          out["time"])           # 開けっ放し時間(秒)
-        print("buttonCount:",   out["buttonCount"])    # 1..15 循環
-        print("isButton:",      out["isButton"])       # 押された=1
-        print("battery:",       out["battery"], "%")
+        print("ドア          :", DOOR_STATE_NAMES[out["doorState"]])
+        print("照度          :", "明るい" if out["isIlluminance"] else "暗い")
+        print("人感 (PIR)    :", "動きあり" if out["isMotion"] else "動きなし")
+        print("最後の開閉から:", out["secSinceHal"], "秒")
+        print("最後の人感から:", out["secSincePir"], "秒")
+        print("ボタン        :", f'count={out["buttonCount"]} 押された={out["isButton"]}')
+        print("バッテリー    :", out["battery"], "%")
         print("-----------")
 
         # ここに取得データによるアクションを記述

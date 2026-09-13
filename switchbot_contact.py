@@ -26,9 +26,16 @@ _STRIPPED = strip_dist_packages()
 
 from bleak import BleakScanner  # noqa: E402
 
-DEVICE_TYPE_CONTACT = 0x64  # 開閉センサー = 'd'
+from contact_protocol import (  # noqa: E402
+    DEVICE_TYPE_CONTACT,
+    DEVICE_TYPE_CONTACT_PAIRING,
+    DOOR_CLOSED,
+    DOOR_OPEN,
+    DOOR_TIMEOUT,
+    DOOR_STATE_NAMES,
+    parse_contact,
+)
 
-# SwitchBot がサービスデータに使う 16bit UUID (0xFD3D と旧来の 0x000D)
 SWITCHBOT_SERVICE_UUIDS = {
     "0000fd3d-0000-1000-8000-00805f9b34fb",
     "0000000d-0000-1000-8000-00805f9b34fb",
@@ -46,41 +53,6 @@ DEVICE_TYPE_NAMES = {
 }
 
 log = logging.getLogger("switchbot")
-
-
-def parse_contact(payload: bytes):
-    """SwitchBot 開閉センサーのサービスデータを解析する。対象外なら None。
-
-    バイト配置は実機 (W1201500, サービス UUID fd3d) の観測から導いたもので、
-    公式仕様書ではありません。`--raw` で自分の個体を確認できます。
-
-        [0]      デバイス種別 (0x64 = 'd')
-        [1]      フラグ。ボタン押下で 0x20 -> 0x60 と変化する。用途未特定
-        [2]      常に 0 (観測範囲では)
-        [3] bit0 照度      1=明るい 0=暗い   ※未検証
-            bit1 開閉状態  1=開     0=閉
-            bit2 開けっ放し
-        [4][5]   最後のボタン押下からの経過秒 (16bit ビッグエンディアン)
-        [6][7]   最後の開閉からの経過秒       (16bit ビッグエンディアン)
-        [8] bit7 ドアを開けるとクリアされる。用途未特定
-            下位4bit ボタン押下回数 (1..15 で循環)
-
-    バッテリー残量はサービスデータに含まれていません。[1] [2] はいずれも
-    バッテリーではないことを確認済みです (ボタン押下で [1] が 0x20 -> 0x60 と
-    跳ねるため)。メーカー固有データ側にある可能性が高く、調査中です。
-    """
-    if len(payload) < 9 or (payload[0] & 0x7F) != DEVICE_TYPE_CONTACT:
-        return None
-    return {
-        "isIlluminance":  payload[3] & 0b00000001,         # 明るい=1 / 暗い=0 ※未検証
-        "isOpen":        (payload[3] & 0b00000010) >> 1,   # 開=1 / 閉=0
-        "isLeaveOpen":   (payload[3] & 0b00000100) >> 2,   # 開けっ放し=1
-        "secSinceButton": (payload[4] << 8) | payload[5],  # 最後のボタン押下からの秒数
-        "secSinceChange": (payload[6] << 8) | payload[7],  # 最後の開閉からの秒数
-        "time":           (payload[6] << 8) | payload[7],  # 旧名。secSinceChange と同じ
-        "buttonCount":    payload[8] & 0b00001111,         # 1..15 で循環
-        "battery":        None,                            # サービスデータには無い
-    }
 
 
 class ContactSensor:
@@ -209,7 +181,8 @@ def print_raw(adv):
 
 
 # 状態とみなすキー。time と rssi は毎秒動くので差分判定から除く。
-STATE_KEYS = ("isIlluminance", "isOpen", "isLeaveOpen", "buttonCount")
+STATE_KEYS = ("isIlluminance", "doorState", "isMotion",
+              "buttonCount", "entranceCount", "goOutCount")
 
 
 class StatePrinter:
@@ -229,16 +202,17 @@ class StatePrinter:
 
         ts = time.strftime("%H:%M:%S")
         print("-----------", ts + (" (変化)" if changed else ""))
-        print("isIlluminance:", data["isIlluminance"])  # 明るい=1 暗い=0
-        print("isOpen:",        data["isOpen"])         # 開=1 閉=0
-        print("isLeaveOpen:",   data["isLeaveOpen"])    # 開けっ放し=1
-        print("secSinceChange:", data["secSinceChange"], "秒")  # 最後の開閉から
-        print("secSinceButton:", data["secSinceButton"], "秒")  # 最後のボタン押下から
-        print("buttonCount:",   data["buttonCount"])    # 1..15 循環
-        print("isButton:",      data["isButton"])       # 押された=1
-        print("battery:",       "不明 (サービスデータに無し)"
-              if data["battery"] is None else f"{data['battery']} %")
-        print("rssi:",          data["rssi"])
+        print("ドア          :", DOOR_STATE_NAMES[data["doorState"]],
+              f'(isOpen={data["isOpen"]} isLeaveOpen={data["isLeaveOpen"]})')
+        print("照度          :", "明るい" if data["isIlluminance"] else "暗い")
+        print("人感 (PIR)    :", "動きあり" if data["isMotion"] else "動きなし")
+        print("最後の開閉から:", data["secSinceHal"], "秒")
+        print("最後の人感から:", data["secSincePir"], "秒")
+        print("ボタン        :", f'count={data["buttonCount"]} 押された={data["isButton"]}')
+        print("入室/外出     :", f'{data["entranceCount"]} / {data["goOutCount"]}')
+        print("バッテリー    :", f'{data["battery"]} %'
+              + ("  ※この個体は 0 を返し続けます" if data["battery"] == 0 else ""))
+        print("rssi          :", data["rssi"])
         print("-----------", flush=True)
 
         # ここに取得データによるアクションを記述
