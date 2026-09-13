@@ -182,8 +182,8 @@ assert pl["isOn"] == 1 and pl["hasTimer"] == 1 and pl["hasDelay"] == 0 and pl["u
 assert pl["powerRaw"] == 456 and pl["powerW"] == 45.6
 assert pl["isOverload"] == 0
 
-# Wi-Fi RSSI は符号付き (0 未満になる)
-assert pl["wifiRssi"] == -58
+# バイトが負の RSSI を表していれば dBm として解釈する
+assert pl["wifiRssiRaw"] == 198 and pl["wifiRssiDbm"] == -58
 
 # OFF と過負荷。過負荷ビットは消費電力に混ざらない (電力は 15bit)
 off = sc_proto.parse_plug(bytes([0] * 6 + [1, 0x00, 0, 0, 0x80 | 0x7F, 0xFF]))
@@ -193,20 +193,30 @@ assert off["isOn"] == 0 and off["isOverload"] == 1 and off["powerRaw"] == 0x7FFF
 # 短いペイロードは弾く
 assert sc_proto.parse_plug(b"\x01\x02") is None
 
-# Wi-Fi RSSI が正の値なら不正なデータとして弾く。
-# 実機の開閉センサーが「プラグ・1302W」として誤検出された際の症状。
-bad = bytes([0xc4, 0x88, 0x9c, 0xaa, 0xab, 0x2f, 1, 0x00, 0, 51, 0x32, 0xd6])
-print("   正の wifi rssi を持つデータ ->", sc_proto.parse_plug(bad))
-assert sc_proto.parse_plug(bad) is None
+# 実機 (種別 0x6A, ON, 66.7W) のメーカー固有データ
+real = bytes.fromhex("70041d7d8e12408012300 29b".replace(" ", ""))
+r = sc_proto.parse_plug(real)
+print(f"   実機: isOn={r['isOn']} {r['powerW']}W seq={r['sequence']} wifi生値={r['wifiRssiRaw']}")
+assert r["isOn"] == 1 and r["powerW"] == 66.7 and r["mac"] == "70:04:1d:7d:8e:12"
+# [9] は仕様書では RSSI だが実機は正の値を返す。dBm とは解釈しない。
+assert r["wifiRssiRaw"] == 48 and r["wifiRssiDbm"] is None
 
-# 機種の判別はサービスデータ側で行う (メーカー固有データからは判別できない)
+# 機種の判別はサービスデータ側で行う。メーカー固有データは全機種が同じ
+# company ID で出し、先頭6バイトも一様に MAC なので判別材料にならない。
+# (開閉センサーが「プラグ・1302W」と誤検出された原因)
 FD3D_U = "0000FD3D-0000-1000-8000-00805F9B34FB"   # 大文字でも拾えること
 assert sc_proto.service_device_type({FD3D_U: bytes([0x67, 0, 0])}) == 0x67
 assert sc_proto.service_device_type({FD3D: pkt(CAPTURE[0][1])}) == 0x64
 assert sc_proto.service_device_type({OTHER: b"\x67\x00"}) is None
 assert sc_proto.service_device_type({}) is None
 print("   機種の判別:", sc_proto.DEVICE_TYPE_NAMES[0x67], "/", sc_proto.DEVICE_TYPE_NAMES[0x64])
-print("プラグミニ OK (機種バイトと RSSI で誤検出を防ぐ)")
+# 実機のサービスデータは 3 バイトしかない。開閉センサーとして読もうとしないこと。
+plug_sd = bytes.fromhex("6a0064")
+assert sc_proto.service_device_type({FD3D: plug_sd}) == 0x6A
+assert sc_proto.parse_contact(plug_sd) is None
+assert sc_proto.parse_motion(plug_sd) is None
+assert sc_proto.parse_curtain(plug_sd) is None
+print("プラグミニ OK (機種バイトで誤検出を防ぐ)")
 
 print()
 print("=== バッテリーの注記 ===")

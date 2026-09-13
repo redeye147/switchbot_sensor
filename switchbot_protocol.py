@@ -208,23 +208,24 @@ def parse_plug(payload: bytes):
         [8] bit0   ディレイ設定あり
             bit1   タイマー設定あり
             bit2   UTC 時刻が同期済み
-        [9]        接続中の Wi-Fi の RSSI
+        [9]        接続中の Wi-Fi の RSSI (下記の注意を参照)
         [10] bit7     過負荷 (15A 超)
              bit[6:0] 消費電力の上位ビット
         [11]          消費電力の下位8ビット
 
     消費電力の単位は仕様書に明記がない。一般には 0.1W 単位とされるため
     powerW を併記するが、既知の負荷をつないで確認すること。
+
+    [9] について: 仕様書は Wi-Fi の RSSI としているが、実機 (種別 0x6A) は
+    45〜48 という正の値を返す。RSSI は 0 以下にしかならないため、この機種では
+    別の意味 (0〜100 の信号強度など) と思われる。生値を wifiRssiRaw に、dBm と
+    解釈できる場合のみ wifiRssiDbm に入れる。
+
+    なお SwitchBot は全機種が company ID 0x0969 のメーカー固有データを出して
+    おり、先頭6バイトも一様に自分の MAC である。そのため長さや MAC 一致では
+    機種を判別できない。判別は service_device_type() で行うこと。
     """
     if len(payload) < 12:
-        return None
-
-    # RSSI は 0 以下にしかならない。正の値が入っていたらプラグミニのデータでは
-    # ない。SwitchBot は全機種が company ID 0x0969 のメーカー固有データを出して
-    # おり、しかも先頭6バイトは自分の MAC なので、長さや MAC 一致だけでは他機種
-    # と区別できない。機種の判別は service_device_type() で行うこと。
-    wifi_rssi = payload[9] - 256 if payload[9] > 127 else payload[9]
-    if wifi_rssi > 0:
         return None
 
     power_raw = ((payload[10] & 0b01111111) << 8) | payload[11]
@@ -237,7 +238,10 @@ def parse_plug(payload: bytes):
         "hasDelay":    payload[8] & 0b001,
         "hasTimer":   (payload[8] & 0b010) >> 1,
         "utcSynced":  (payload[8] & 0b100) >> 2,
-        "wifiRssi":    wifi_rssi,
+        # 仕様書は [9] を Wi-Fi RSSI とするが、実機 (種別 0x6A) は 45〜48 という
+        # 正の値を返す。dBm ではあり得ないため、生値と dBm 解釈を分けて持つ。
+        "wifiRssiRaw": payload[9],
+        "wifiRssiDbm": payload[9] - 256 if payload[9] > 127 else None,
         "isOverload": (payload[10] >> 7) & 1,          # 15A 超
         "powerRaw":    power_raw,                      # 生値
         "powerW":      round(power_raw * POWER_UNIT_W, 1),

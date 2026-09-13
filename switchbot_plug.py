@@ -143,7 +143,9 @@ class StatePrinter:
         print("過負荷        :", "！15A 超過" if data["isOverload"] else "なし")
         print("タイマー/遅延 :", f'{data["hasTimer"]} / {data["hasDelay"]}')
         print("UTC 同期      :", data["utcSynced"])
-        print("Wi-Fi rssi    :", data["wifiRssi"])
+        wifi = (f'{data["wifiRssiDbm"]} dBm' if data["wifiRssiDbm"] is not None
+                else f'{data["wifiRssiRaw"]} (dBm ではない値。機種により意味が異なる)')
+        print("Wi-Fi         :", wifi)
         print("BLE rssi      :", data["rssi"])
         print("-----------", flush=True)
 
@@ -174,7 +176,7 @@ async def find_plugs(seconds=10):
         state = "ON " if d["isOn"] else "OFF"
         char = chr(dtype) if 32 <= dtype < 127 else "?"
         print(f"  {addr}  0x{dtype:02x} ({char})  {state}  {d['powerW']:7.1f} W  "
-              f"wifi_rssi={d['wifiRssi']:4}  ble_rssi={rssi:4}")
+              f"wifi={d['wifiRssiRaw']:4}  ble_rssi={rssi:4}")
     if not found:
         print("  見つかりませんでした。プラグミニが通電しているか確認してください。")
     return sorted(found)
