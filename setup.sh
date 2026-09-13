@@ -29,17 +29,7 @@ env -u PYTHONPATH "$VENV/bin/pip" install -r requirements.txt
 
 echo
 echo "=== 検証 ==="
-env -u PYTHONPATH "$VENV/bin/python" - <<'PY'
-import sys, typing_extensions, bleak
-bad = [p for p in sys.path if "dist-packages" in p]
-print("python              :", sys.version.split()[0])
-print("typing_extensions   :", typing_extensions.__version__, "@", typing_extensions.__file__)
-print("bleak               :", getattr(bleak, "__version__", "unknown"))
-if bad:
-    print("!! sys.path に dist-packages が混入しています:", bad)
-    sys.exit(1)
-print("OK: システムの dist-packages は遮断されています")
-PY
+env -u PYTHONPATH "$VENV/bin/python" verify_env.py
 
 echo
 echo "次のコマンドで MAC アドレスを調べてください:"
