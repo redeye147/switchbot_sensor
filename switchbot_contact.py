@@ -14,6 +14,7 @@ Python 3.11+) ではビルドに失敗することがあります。bleak は Bl
 import argparse
 import asyncio
 import logging
+import time
 import unicodedata
 
 # bleak を import する前に、システムの dist-packages を排除する。
@@ -52,19 +53,22 @@ def parse_contact(payload: bytes):
     if len(payload) < 9 or (payload[0] & 0x7F) != DEVICE_TYPE_CONTACT:
         return None
     return {
-        "battery":       payload[2] & 0b01111111,          # バッテリー残量 %
+        # ※ 未検証: 実機で常に 0 を返すため、バッテリーはここではない可能性が高い
+        "battery":       payload[2] & 0b01111111,
         "isIlluminance":  payload[3] & 0b00000001,         # 明るい=1 / 暗い=0
         "isOpen":        (payload[3] & 0b00000010) >> 1,   # 開=1 / 閉=0
         "isLeaveOpen":   (payload[3] & 0b00000100) >> 2,   # 開けっ放し=1
-        "time":           payload[7],                      # 開けっ放し経過秒
+        # 最後の状態変化からの経過秒。1バイトなので 255 で頭打ち (上位バイトは未特定)
+        "time":           payload[7],
         "buttonCount":    payload[8] & 0b00001111,         # 1..15 で循環
     }
 
 
 class ContactSensor:
-    def __init__(self, macaddr, on_update=None):
+    def __init__(self, macaddr, on_update=None, on_raw=None):
         self.macaddr = macaddr.lower()
         self.on_update = on_update
+        self.on_raw = on_raw
         self.prev_button_count = None
         self.state = None
 
@@ -80,7 +84,9 @@ class ContactSensor:
     def _handle(self, device, adv):
         if device.address.lower() != self.macaddr:
             return
-        for payload in adv.service_data.values():
+        for uuid, payload in adv.service_data.items():
+            if self.on_raw:
+                self.on_raw(payload, uuid, adv.rssi)
             data = parse_contact(payload)
             if data is None:
                 continue
@@ -146,29 +152,64 @@ async def discover_switchbots(seconds=10):
         print(f"  {addr}  rssi={rssi:4}  {tag}  {name or ''}")
 
 
-def print_state(data):
-    print("-----------")
-    print("isIlluminance:", data["isIlluminance"])  # 明るい=1 暗い=0
-    print("isOpen:",        data["isOpen"])         # 開=1 閉=0
-    print("isLeaveOpen:",   data["isLeaveOpen"])    # 開けっ放し=1
-    print("time:",          data["time"])           # 開けっ放し時間(秒)
-    print("buttonCount:",   data["buttonCount"])    # 1..15 循環
-    print("isButton:",      data["isButton"])       # 押された=1
-    print("battery:",       data["battery"], "%")
-    print("rssi:",          data["rssi"])
-    print("-----------", flush=True)
+def print_raw(payload, uuid, rssi):
+    """サービスデータを生のまま表示する。バイト配置の検証用。"""
+    ts = time.strftime("%H:%M:%S")
+    hexs = " ".join(f"{b:02x}" for b in payload)
+    print(f"{ts}  uuid={uuid.lower()[4:8]}  len={len(payload):2}  rssi={rssi:4}  {hexs}")
+    # 意味を絞り込みやすいよう、各バイトを 10進 / 2進でも出す
+    cells = [f"[{i}]={b:3d}/{b:08b}" for i, b in enumerate(payload)]
+    for i in range(0, len(cells), 5):
+        print("         ", "  ".join(cells[i:i + 5]))
+    print(flush=True)
 
-    # ここに取得データによるアクションを記述
-    # if data["isButton"]:
-    #     ...
-    # if data["isLeaveOpen"]:
-    #     ...
+
+# 状態とみなすキー。time と rssi は毎秒動くので差分判定から除く。
+STATE_KEYS = ("isIlluminance", "isOpen", "isLeaveOpen", "buttonCount")
+
+
+class StatePrinter:
+    """既定では状態が変わったときだけ表示する (アドバタイズは毎秒届くため)。"""
+
+    def __init__(self, show_all=False):
+        self.show_all = show_all
+        self.prev = None
+
+    def __call__(self, data):
+        key = tuple(data[k] for k in STATE_KEYS)
+        changed = key != self.prev
+        self.prev = key
+
+        if not (self.show_all or changed):
+            return
+
+        ts = time.strftime("%H:%M:%S")
+        print("-----------", ts + (" (変化)" if changed else ""))
+        print("isIlluminance:", data["isIlluminance"])  # 明るい=1 暗い=0
+        print("isOpen:",        data["isOpen"])         # 開=1 閉=0
+        print("isLeaveOpen:",   data["isLeaveOpen"])    # 開けっ放し=1
+        print("time:",          data["time"])           # 最後の状態変化からの経過秒
+        print("buttonCount:",   data["buttonCount"])    # 1..15 循環
+        print("isButton:",      data["isButton"])       # 押された=1
+        print("battery:",       data["battery"], "%")   # ※ 未検証
+        print("rssi:",          data["rssi"])
+        print("-----------", flush=True)
+
+        # ここに取得データによるアクションを記述
+        # if data["isButton"]:
+        #     ...
+        # if data["isLeaveOpen"]:
+        #     ...
 
 
 async def main():
     ap = argparse.ArgumentParser(description="SwitchBot 開閉センサー BLE スキャナ")
     ap.add_argument("--mac", help="対象デバイスの MAC アドレス (例 c4:88:9c:aa:ab:2f)")
     ap.add_argument("--scan", action="store_true", help="周囲の SwitchBot を探して MAC を表示して終了")
+    ap.add_argument("--all", action="store_true",
+                    help="状態が変わらなくても毎回表示する (既定は変化時のみ)")
+    ap.add_argument("--raw", action="store_true",
+                    help="サービスデータを生のまま表示する (バイト配置の検証用)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -185,7 +226,15 @@ async def main():
         log.warning("PYTHONPATH の設定を見直すことをおすすめします (README 参照)")
 
     log.info("%s の受信を開始します (Ctrl-C で終了)", args.mac.lower())
-    await ContactSensor(args.mac, on_update=print_state).run()
+    if not args.all and not args.raw:
+        log.info("状態が変わったときだけ表示します (毎回見るには --all)")
+
+    sensor = ContactSensor(
+        args.mac,
+        on_update=None if args.raw else StatePrinter(show_all=args.all),
+        on_raw=print_raw if args.raw else None,
+    )
+    await sensor.run()
 
 
 if __name__ == "__main__":
