@@ -49,18 +49,37 @@ log = logging.getLogger("switchbot")
 
 
 def parse_contact(payload: bytes):
-    """SwitchBot 開閉センサーのサービスデータを解析する。対象外なら None。"""
+    """SwitchBot 開閉センサーのサービスデータを解析する。対象外なら None。
+
+    バイト配置は実機 (W1201500, サービス UUID fd3d) の観測から導いたもので、
+    公式仕様書ではありません。`--raw` で自分の個体を確認できます。
+
+        [0]      デバイス種別 (0x64 = 'd')
+        [1]      フラグ。ボタン押下で 0x20 -> 0x60 と変化する。用途未特定
+        [2]      常に 0 (観測範囲では)
+        [3] bit0 照度      1=明るい 0=暗い   ※未検証
+            bit1 開閉状態  1=開     0=閉
+            bit2 開けっ放し
+        [4][5]   最後のボタン押下からの経過秒 (16bit ビッグエンディアン)
+        [6][7]   最後の開閉からの経過秒       (16bit ビッグエンディアン)
+        [8] bit7 ドアを開けるとクリアされる。用途未特定
+            下位4bit ボタン押下回数 (1..15 で循環)
+
+    バッテリー残量はサービスデータに含まれていません。[1] [2] はいずれも
+    バッテリーではないことを確認済みです (ボタン押下で [1] が 0x20 -> 0x60 と
+    跳ねるため)。メーカー固有データ側にある可能性が高く、調査中です。
+    """
     if len(payload) < 9 or (payload[0] & 0x7F) != DEVICE_TYPE_CONTACT:
         return None
     return {
-        # ※ 未検証: 実機で常に 0 を返すため、バッテリーはここではない可能性が高い
-        "battery":       payload[2] & 0b01111111,
-        "isIlluminance":  payload[3] & 0b00000001,         # 明るい=1 / 暗い=0
+        "isIlluminance":  payload[3] & 0b00000001,         # 明るい=1 / 暗い=0 ※未検証
         "isOpen":        (payload[3] & 0b00000010) >> 1,   # 開=1 / 閉=0
         "isLeaveOpen":   (payload[3] & 0b00000100) >> 2,   # 開けっ放し=1
-        # 最後の状態変化からの経過秒。1バイトなので 255 で頭打ち (上位バイトは未特定)
-        "time":           payload[7],
+        "secSinceButton": (payload[4] << 8) | payload[5],  # 最後のボタン押下からの秒数
+        "secSinceChange": (payload[6] << 8) | payload[7],  # 最後の開閉からの秒数
+        "time":           (payload[6] << 8) | payload[7],  # 旧名。secSinceChange と同じ
         "buttonCount":    payload[8] & 0b00001111,         # 1..15 で循環
+        "battery":        None,                            # サービスデータには無い
     }
 
 
@@ -213,10 +232,12 @@ class StatePrinter:
         print("isIlluminance:", data["isIlluminance"])  # 明るい=1 暗い=0
         print("isOpen:",        data["isOpen"])         # 開=1 閉=0
         print("isLeaveOpen:",   data["isLeaveOpen"])    # 開けっ放し=1
-        print("time:",          data["time"])           # 最後の状態変化からの経過秒
+        print("secSinceChange:", data["secSinceChange"], "秒")  # 最後の開閉から
+        print("secSinceButton:", data["secSinceButton"], "秒")  # 最後のボタン押下から
         print("buttonCount:",   data["buttonCount"])    # 1..15 循環
         print("isButton:",      data["isButton"])       # 押された=1
-        print("battery:",       data["battery"], "%")   # ※ 未検証
+        print("battery:",       "不明 (サービスデータに無し)"
+              if data["battery"] is None else f"{data['battery']} %")
         print("rssi:",          data["rssi"])
         print("-----------", flush=True)
 
