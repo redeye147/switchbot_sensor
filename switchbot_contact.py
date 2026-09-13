@@ -26,7 +26,7 @@ _STRIPPED = strip_dist_packages()
 
 from bleak import BleakScanner  # noqa: E402
 
-from contact_protocol import (  # noqa: E402
+from switchbot_protocol import (  # noqa: E402
     DEVICE_TYPE_CONTACT,
     DEVICE_TYPE_CONTACT_PAIRING,
     DOOR_CLOSED,
@@ -108,8 +108,11 @@ def _pad(text, width):
     return text + " " * max(0, width - w)
 
 
-async def discover_switchbots(seconds=10):
-    """周囲のデバイスを列挙する。SwitchBot はサービスデータの UUID で判別する。"""
+async def discover_switchbots(seconds=10, highlight=DEVICE_TYPE_CONTACT):
+    """周囲のデバイスを列挙する。SwitchBot はサービスデータの UUID で判別する。
+
+    highlight に種別バイトを渡すと、その行に「これを --mac に指定」と印を付ける。
+    """
     switchbots = {}
     others = {}
 
@@ -132,7 +135,7 @@ async def discover_switchbots(seconds=10):
         for addr, (dtype, uuid, rssi) in sorted(switchbots.items()):
             name = DEVICE_TYPE_NAMES.get(dtype, "?")
             char = chr(dtype) if 32 <= dtype < 127 else "?"
-            mark = "   <= これを --mac に指定" if dtype == DEVICE_TYPE_CONTACT else ""
+            mark = "   <= これを --mac に指定" if dtype == highlight else ""
             print(f"  {addr}  0x{dtype:02x} ({char}) {_pad(name, 14)} rssi={rssi:4}  uuid={uuid[4:8]}{mark}")
     else:
         print("  見つかりませんでした。センサーを近づける / 電池を確認してください。")

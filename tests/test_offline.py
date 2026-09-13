@@ -15,6 +15,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import switchbot_contact as sc
+import switchbot_protocol as sc_proto
 
 CONTACT = "0000000d-0000-1000-8000-00805f9b34fb"
 FD3D = "0000fd3d-0000-1000-8000-00805f9b34fb"
@@ -113,6 +114,34 @@ d = sc.parse_contact(bytes([0x64, 0, 0, 0b11000000, 0xFF, 0xFF, 0xFF, 0xFF, 0]))
 print("  PIR:", d["secSincePir"], " HAL:", d["secSinceHal"])
 assert d["secSincePir"] == 131071 and d["secSinceHal"] == 131071
 print("65535 を超える値が読める")
+
+print()
+print("=== 人感センサー (motionsensor.md) ===")
+# [0]='s', [1] PIR検知中, [2] 電池90%, [3][4]=0x0102, [5]=LED有/IoT有/中距離/明るい
+m = sc_proto.parse_motion(bytes([0x73, 0b01000000, 90, 0x01, 0x02, 0b00110110]))
+print("  ", m)
+assert m["isMotion"] == 1 and m["battery"] == 90 and m["secSincePir"] == 258
+assert m["ledEnabled"] == 1 and m["iotEnabled"] == 1
+assert m["sensingDistance"] == 1 and m["isIlluminance"] == 1
+
+# 経過秒は 17bit: [5] bit7 が最上位。[4] だけ読むと 255 で一周してしまう。
+m = sc_proto.parse_motion(bytes([0x73, 0, 0, 0xFF, 0xFF, 0b10000000]))
+print("   17bit 最大値:", m["secSincePir"])
+assert m["secSincePir"] == 131071
+m = sc_proto.parse_motion(bytes([0x73, 0, 0, 0x01, 0x00, 0b00000001]))
+print("   [4]=0 でも 256 秒と読める:", m["secSincePir"])
+assert m["secSincePir"] == 256, m["secSincePir"]
+
+# 明るさは 01=暗い / 10=明るい。00 と 11 は予約値なので None を返す。
+for bits, want in ((0b01, 0), (0b10, 1), (0b00, None), (0b11, None)):
+    got = sc_proto.parse_motion(bytes([0x73, 0, 0, 0, 0, bits]))["isIlluminance"]
+    print(f"   [5]&0b11=0b{bits:02b} -> isIlluminance={got}")
+    assert got == want
+
+# 開閉センサーのパケットを人感として読まない (種別バイトで弾く)
+assert sc_proto.parse_motion(pkt(CAPTURE[0][1])) is None
+assert sc_proto.parse_contact(bytes([0x73, 0, 0, 0, 0, 0, 0, 0, 0])) is None
+print("人感センサー OK (種別バイトで取り違えない)")
 
 print()
 print("=== ボタン押下検出 (1..15 循環) ===")

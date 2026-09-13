@@ -20,7 +20,7 @@ strip_dist_packages()
 
 from bluepy.btle import Scanner, DefaultDelegate, BTLEException  # noqa: E402
 
-from contact_protocol import DOOR_STATE_NAMES, parse_contact
+from switchbot_protocol import DOOR_STATE_NAMES, parse_contact
 
 class ScanDelegate(DefaultDelegate):
     def __init__(self, macaddr):
