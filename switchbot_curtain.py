@@ -130,7 +130,8 @@ async def main():
     log.info("%s の受信を開始します (Ctrl-C で終了)", args.mac.lower())
     if not args.all and not args.raw:
         log.info("状態が変わったときだけ表示します (毎回見るには --all)")
-    log.info("位置 %% の向き (0 が全開か全閉か) は仕様書に明記がありません。"
+    # logging が %% を解釈するのは引数を渡したときだけ。ここは引数なしなので % のまま。
+    log.info("位置 % の向き (0 が全開か全閉か) は仕様書に明記がありません。"
              "カーテンを動かして確認してください")
 
     curtain = Curtain(
