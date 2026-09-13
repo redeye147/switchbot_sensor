@@ -84,9 +84,10 @@ class ContactSensor:
     def _handle(self, device, adv):
         if device.address.lower() != self.macaddr:
             return
+        if self.on_raw:
+            self.on_raw(adv)
+
         for uuid, payload in adv.service_data.items():
-            if self.on_raw:
-                self.on_raw(payload, uuid, adv.rssi)
             data = parse_contact(payload)
             if data is None:
                 continue
@@ -152,15 +153,39 @@ async def discover_switchbots(seconds=10):
         print(f"  {addr}  rssi={rssi:4}  {tag}  {name or ''}")
 
 
-def print_raw(payload, uuid, rssi):
-    """サービスデータを生のまま表示する。バイト配置の検証用。"""
+def _u16(b, i):
+    """ビッグエンディアン16bitとして読む。範囲外なら None。"""
+    return (b[i] << 8) | b[i + 1] if len(b) > i + 1 else None
+
+
+def _dump_bytes(payload, indent="          "):
+    for i in range(0, len(payload), 5):
+        cells = [f"[{j}]={payload[j]:3d}/{payload[j]:08b}" for j in range(i, min(i + 5, len(payload)))]
+        print(indent, "  ".join(cells))
+
+
+def print_raw(adv):
+    """サービスデータとメーカー固有データを生のまま表示する。バイト配置の検証用。"""
     ts = time.strftime("%H:%M:%S")
-    hexs = " ".join(f"{b:02x}" for b in payload)
-    print(f"{ts}  uuid={uuid.lower()[4:8]}  len={len(payload):2}  rssi={rssi:4}  {hexs}")
-    # 意味を絞り込みやすいよう、各バイトを 10進 / 2進でも出す
-    cells = [f"[{i}]={b:3d}/{b:08b}" for i, b in enumerate(payload)]
-    for i in range(0, len(cells), 5):
-        print("         ", "  ".join(cells[i:i + 5]))
+    print(f"=== {ts}  rssi={adv.rssi}")
+
+    for uuid, payload in sorted(adv.service_data.items()):
+        print(f"  service_data uuid={uuid.lower()[4:8]} len={len(payload):2}  "
+              + " ".join(f"{b:02x}" for b in payload))
+        _dump_bytes(payload)
+        if len(payload) >= 9:
+            # 16bit カウンタ候補と [8] のニブル分解
+            print(f"           u16[4:5]={_u16(payload, 4):5}   u16[6:7]={_u16(payload, 6):5}"
+                  f"   [8]hi={payload[8] >> 4:2} [8]lo={payload[8] & 0x0F:2}")
+
+    for cid, payload in sorted(adv.manufacturer_data.items()):
+        vendor = " (SwitchBot)" if cid == 0x0969 else ""
+        print(f"  manufacturer_data id=0x{cid:04x}{vendor} len={len(payload):2}  "
+              + " ".join(f"{b:02x}" for b in payload))
+        _dump_bytes(payload)
+
+    if not adv.service_data and not adv.manufacturer_data:
+        print("  (データなし)")
     print(flush=True)
 
 
