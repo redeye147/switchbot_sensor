@@ -11,6 +11,7 @@ SwitchBot デバイスは BLE のアドバタイジングパケットにセン�
 |---|---|---|
 | 開閉センサー (Contact Sensor) | `0x64` (`'d'`) | `switchbot_contact.py` |
 | 人感センサー (Motion Sensor) | `0x73` (`'s'`) | `switchbot_motion.py` |
+| カーテン (Curtain / Curtain2) | `0x63` (`'c'`) | `switchbot_curtain.py` |
 
 ## クイックスタート
 
@@ -24,6 +25,7 @@ sudo apt install -y python3-venv bluez
 # 受信開始
 ./venv/bin/python switchbot_contact.py --mac c4:88:9c:aa:ab:2f   # 開閉センサー
 ./venv/bin/python switchbot_motion.py  --mac d2:dc:22:fd:6d:d1   # 人感センサー
+./venv/bin/python switchbot_curtain.py --mac dc:87:13:08:75:83   # カーテン
 ```
 
 詳細なセットアップと自動起動の設定は [docs/SETUP.md](docs/SETUP.md) を参照。
@@ -34,6 +36,7 @@ sudo apt install -y python3-venv bluez
 |---|---|
 | `switchbot_contact.py` | **推奨実装**。bleak (BlueZ D-Bus) 版。root 権限不要 |
 | `switchbot_motion.py` | 人感センサー用。bleak 版 |
+| `switchbot_curtain.py` | カーテン用。bleak 版 |
 | `switchbot_contact_bluepy.py` | bluepy 版。旧実装互換。root 権限または setcap が必要 |
 | `systemd/switchbot-contact.service` | 自動起動用 systemd ユニット |
 | `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
@@ -159,6 +162,49 @@ secSincePir = ([5] bit7 << 16) | ([3] << 8) | [4]
 
 `00` と `11` は予約値です。`(値 & 0b11) - 1` のように引き算で 0/1 に変換すると、
 予約値のときに `-1` や `2` が出ます。本実装は予約値を `None` として扱います。
+
+## カーテン
+
+**Curtain / Curtain2 (種別 `'c'`) のみ対応しています。** Curtain 3 は種別バイトも
+バイト配置も異なる (`devicetypes/curtain3.md`) ため解析しません。
+
+受信専用です。開閉の操作はできません。
+
+| キー | 意味 |
+|---|---|
+| `position` | 現在位置 % |
+| `isMoving` | 動作中=1 / 停止=0 |
+| `lightLevel` | 明るさレベル (1〜10) |
+| `calibrated` | キャリブレーション済み=1 (0 なら要調整) |
+| `connectable` | 接続を許可しているか |
+| `deviceChain` | デバイスチェーン数 |
+| `battery` | バッテリー残量 % |
+
+### サービスデータのバイト配置 (カーテン)
+
+**出典:** [OpenWonderLabs/SwitchBotAPI-BLE](https://github.com/OpenWonderLabs/SwitchBotAPI-BLE)
+→ `devicetypes/curtain.md`
+
+| 位置 | 内容 |
+|---|---|
+| `[0]` bit[6:0] | デバイス種別 `'c'`(0x63)=常時アドバタイズ / `'C'`(0x43)=ペアリング |
+| `[1]` bit7 | 接続を許可しているか |
+| `[1]` bit6 | キャリブレーション済みか |
+| `[2]` bit[6:0] | バッテリー残量 % |
+| `[3]` bit7 | 動作状態 0=停止 / 1=動作中 |
+| `[3]` bit[6:0] | 現在位置 % |
+| `[4]` bit[7:4] | 明るさレベル (1〜10) |
+| `[4]` bit[3:0] | デバイスチェーン数 |
+
+#### 位置の向きは仕様書に書かれていません
+
+`0` が全開なのか全閉なのかは公式仕様に明記がありません。一般には
+**0=全開 / 100=全閉** とされますが、**実機でカーテンを動かして確認してください**。
+
+#### 動作ビットは位置に混ざります
+
+`[3]` は bit7 が動作状態、bit[6:0] が位置です。バイトをそのまま位置として読むと、
+**動作中に位置が +128 された値**になります (例: 位置30% が 158 と表示される)。
 
 ### ボタン押下の検出
 

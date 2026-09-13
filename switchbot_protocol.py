@@ -8,6 +8,7 @@ https://github.com/OpenWonderLabs/SwitchBotAPI-BLE
 
   開閉センサー (contactsensor.md)  parse_contact()
   人感センサー (motionsensor.md)   parse_motion()
+  カーテン     (curtain.md)       parse_curtain()
 """
 
 # 開閉センサーの種別。'd' = 常時アドバタイズモード、'D' = ペアリングモード。
@@ -127,6 +128,50 @@ def parse_motion(payload: bytes):
         "isIlluminance":  1 if light == LIGHT_BRIGHT else (0 if light == LIGHT_DARK else None),
     }
 
+
+
+# ------------------------------------------------------------------- カーテン
+
+# カーテンの種別。'c' = 常時アドバタイズモード、'C' = ペアリングモード。
+# Curtain 3 は別形式 (種別 '[' 0x5B / '{' 0x7B, curtain3.md) のため対象外。
+DEVICE_TYPE_CURTAIN = 0x63          # 'c'
+DEVICE_TYPE_CURTAIN_PAIRING = 0x43  # 'C'
+
+
+def parse_curtain(payload: bytes):
+    """SwitchBot カーテンのサービスデータを解析する。対象外なら None。
+
+    出典: devicetypes/curtain.md ("Curtain Broadcast Package")
+
+        [0] bit[6:0] デバイス種別 'c'(0x63)=常時アドバタイズ / 'C'(0x43)=ペアリング
+        [1] bit7     接続を許可しているか
+            bit6     キャリブレーション済みか (0 なら要調整)
+            bit[5:0] 未使用
+        [2] bit[6:0] バッテリー残量 %
+        [3] bit7     動作状態  0=停止 / 1=動作中
+            bit[6:0] 現在位置 %
+        [4] bit[7:4] 明るさレベル (1〜10)
+            bit[3:0] デバイスチェーン数
+
+    位置 % の向き (0 が全開か全閉か) は仕様書に明記がない。実機でカーテンを
+    動かして確かめること。一般には 0=全開 / 100=全閉 とされる。
+
+    Curtain 3 は種別バイトもバイト配置も異なる (curtain3.md) ため解析しない。
+    """
+    if len(payload) < 5:
+        return None
+    if (payload[0] & 0x7F) not in (DEVICE_TYPE_CURTAIN, DEVICE_TYPE_CURTAIN_PAIRING):
+        return None
+
+    return {
+        "connectable":  (payload[1] >> 7) & 1,             # 接続許可
+        "calibrated":   (payload[1] >> 6) & 1,             # 0 なら要キャリブレーション
+        "battery":       payload[2] & 0b01111111,          # 残量 %
+        "isMoving":     (payload[3] >> 7) & 1,             # 動作中=1
+        "position":      payload[3] & 0b01111111,          # 現在位置 %
+        "lightLevel":   (payload[4] >> 4) & 0b1111,        # 明るさ 1..10
+        "deviceChain":   payload[4] & 0b1111,              # チェーン数
+    }
 
 # ------------------------------------------------------------------- 共通処理
 

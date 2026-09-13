@@ -144,6 +144,34 @@ assert sc_proto.parse_contact(bytes([0x73, 0, 0, 0, 0, 0, 0, 0, 0])) is None
 print("人感センサー OK (種別バイトで取り違えない)")
 
 print()
+print("=== カーテン (curtain.md) ===")
+# [0]='c', [1] 接続可+較正済, [2] 電池77%, [3] 動作中+位置30%, [4] 明るさ5/チェーン1
+c = sc_proto.parse_curtain(bytes([0x63, 0b11000000, 77, 0b10011110, 0x51]))
+print("  ", c)
+assert c["connectable"] == 1 and c["calibrated"] == 1 and c["battery"] == 77
+assert c["isMoving"] == 1 and c["position"] == 30
+assert c["lightLevel"] == 5 and c["deviceChain"] == 1
+
+# 動作ビットは位置に混ざらない (位置は下位7bit)
+stopped = sc_proto.parse_curtain(bytes([0x63, 0, 0, 100, 0]))
+moving = sc_proto.parse_curtain(bytes([0x63, 0, 0, 100 | 0x80, 0]))
+print(f"   停止 position={stopped['position']} isMoving={stopped['isMoving']}")
+print(f"   動作 position={moving['position']} isMoving={moving['isMoving']}")
+assert stopped["position"] == moving["position"] == 100
+assert stopped["isMoving"] == 0 and moving["isMoving"] == 1
+
+# 未較正
+assert sc_proto.parse_curtain(bytes([0x63, 0b10000000, 0, 0, 0]))["calibrated"] == 0
+
+# Curtain 3 ('[' 0x5B) は別形式なので解析しない
+assert sc_proto.parse_curtain(bytes([0x5B, 0, 0, 0, 0])) is None
+# 他機種のパケットを取り違えない
+assert sc_proto.parse_curtain(pkt(CAPTURE[0][1])) is None
+assert sc_proto.parse_contact(bytes([0x63, 0, 0, 0, 0, 0, 0, 0, 0])) is None
+assert sc_proto.parse_motion(bytes([0x63, 0, 0, 0, 0, 0])) is None
+print("カーテン OK (Curtain 3 と他機種は弾く)")
+
+print()
 print("=== バッテリーの注記 ===")
 for b, want_warn in ((0, False), (19, True), (20, True), (21, False), (90, False)):
     note = sc_proto.battery_note(b)
