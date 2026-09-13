@@ -15,8 +15,7 @@ SwitchBot デバイスは BLE のアドバタイジングパケットにセン�
 
 ```bash
 sudo apt install -y python3-venv bluez
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
+./setup.sh
 
 # 周囲の SwitchBot を探して MAC アドレスを調べる
 ./venv/bin/python switchbot_contact.py --scan
@@ -34,6 +33,7 @@ python3 -m venv venv
 | `switchbot_contact.py` | **推奨実装**。bleak (BlueZ D-Bus) 版。root 権限不要 |
 | `switchbot_contact_bluepy.py` | bluepy 版。旧実装互換。root 権限または setcap が必要 |
 | `systemd/switchbot-contact.service` | 自動起動用 systemd ユニット |
+| `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
 | `docs/SETUP.md` | ラズパイ セットアップ手順とトラブルシューティング |
 
 ## 取得できる値

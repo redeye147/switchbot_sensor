@@ -6,8 +6,8 @@ Wants=bluetooth.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/switchbot
-ExecStart=/home/pi/switchbot/venv/bin/python /home/pi/switchbot/switchbot_contact.py --mac c4:88:9c:aa:ab:2f
+WorkingDirectory=/home/pi/switchbot_sensor
+ExecStart=/home/pi/switchbot_sensor/venv/bin/python /home/pi/switchbot_sensor/switchbot_contact.py --mac c4:88:9c:aa:ab:2f
 Restart=always
 RestartSec=5
 StandardOutput=journal

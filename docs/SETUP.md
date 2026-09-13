@@ -21,17 +21,26 @@ sudo apt install -y python3-venv python3-pip bluez
 ```
 
 ## 3. 仮想環境を作って bleak を入れる
-Bookworm 以降は PEP 668 により `pip install` が直接できません。venv を使います。
+Bookworm 以降は PEP 668 により `pip install` が直接できません。また Bullseye では
+システムの `/usr/lib/python3/dist-packages` が venv に漏れて古いパッケージを掴む
+ことがあります。同梱の `setup.sh` が両方を処理します。
 ```bash
-mkdir -p ~/switchbot && cd ~/switchbot
-python3 -m venv venv
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install bleak
+cd ~/switchbot_sensor
+./setup.sh
+```
+最後に `OK: システムの dist-packages は遮断されています` と出れば成功です。
+
+手動で作る場合は、PYTHONPATH を外し `include-system-site-packages` が `false` で
+あることを確認してください。
+```bash
+env -u PYTHONPATH python3 -m venv venv
+grep include-system-site-packages venv/pyvenv.cfg   # false であること
+env -u PYTHONPATH ./venv/bin/pip install -r requirements.txt
 ```
 
 ## 4. MAC アドレスを調べる
 ```bash
-cd ~/switchbot
+cd ~/switchbot_sensor
 ./venv/bin/python switchbot_contact.py --scan
 ```
 `type=0x64 (d)  <= 開閉センサー` と出た行の MAC が対象です。
@@ -83,3 +92,6 @@ sudo setcap 'cap_net_raw,cap_net_admin+eip' "$HELPER"
 | たまに値が取れない | BLE アドバタイズは取りこぼすもの。前回値を保持して使う設計にする |
 | 出力が多すぎる | bleak 版は受信のたびに表示する。`print_state` の先頭で前回値と比較し、変化時のみ出力する |
 | センサーが遠い | rssi が -90 を下回ると不安定。-70 前後を目安に設置する |
+| `ImportError: cannot import name 'Buffer' from 'typing_extensions'` | システムの古い typing_extensions が venv より優先されている。`./setup.sh` で venv を作り直す |
+| pip が `Not uninstalling ... outside environment` と言う | 同上。venv に dist-packages が漏れているサイン |
+| `-bash: 予期しないトークン \`newline' 周辺に構文エラー` | `--mac <MAC>` の山括弧をそのまま貼り付けている。`<` はリダイレクト記号なので外して `--mac c4:88:9c:aa:ab:2f` と書く |

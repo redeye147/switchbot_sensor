@@ -1,4 +1,9 @@
 # 推奨: BlueZ の D-Bus API を使う。root 権限不要で systemd 常駐しやすい
+#
+# bleak 1.x は Python 3.9+ で動作しますが typing_extensions>=4.6 (Buffer) を要求します。
+# Raspberry Pi OS Bullseye にはシステム側に typing_extensions 3.7.4.3 が入っており、
+# これが venv に漏れてくると ImportError になります。必ず ./setup.sh で venv を
+# 作ってください (dist-packages を遮断します)。
 bleak>=0.22
 
 # 旧実装を使う場合のみ。2019年以降未メンテのため Python 3.11+ ではビルド失敗することがある
