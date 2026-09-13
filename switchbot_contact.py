@@ -33,6 +33,7 @@ from switchbot_protocol import (  # noqa: E402
     DOOR_OPEN,
     DOOR_TIMEOUT,
     DOOR_STATE_NAMES,
+    battery_note,
     parse_contact,
 )
 
@@ -213,8 +214,7 @@ class StatePrinter:
         print("最後の人感から:", data["secSincePir"], "秒")
         print("ボタン        :", f'count={data["buttonCount"]} 押された={data["isButton"]}')
         print("入室/外出     :", f'{data["entranceCount"]} / {data["goOutCount"]}')
-        print("バッテリー    :", f'{data["battery"]} %'
-              + ("  ※この個体は 0 を返し続けます" if data["battery"] == 0 else ""))
+        print("バッテリー    :", f'{data["battery"]} %' + battery_note(data["battery"]))
         print("rssi          :", data["rssi"])
         print("-----------", flush=True)
 

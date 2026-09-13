@@ -22,6 +22,7 @@ from bleak import BleakScanner  # noqa: E402
 
 from switchbot_protocol import (  # noqa: E402
     DEVICE_TYPE_MOTION,
+    battery_note,
     LIGHT_LEVEL_NAMES,
     SENSING_DISTANCE_NAMES,
     parse_motion,
@@ -96,7 +97,7 @@ class StatePrinter:
               f'(isIlluminance={data["isIlluminance"]})')
         print("検知距離      :", SENSING_DISTANCE_NAMES[data["sensingDistance"]])
         print("LED / IoT     :", f'{data["ledEnabled"]} / {data["iotEnabled"]}')
-        print("バッテリー    :", f'{data["battery"]} %')
+        print("バッテリー    :", f'{data["battery"]} %' + battery_note(data["battery"]))
         print("rssi          :", data["rssi"])
         print("-----------", flush=True)
 

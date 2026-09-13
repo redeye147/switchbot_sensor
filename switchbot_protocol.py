@@ -126,3 +126,22 @@ def parse_motion(payload: bytes):
         # 予約値 (0, 3) のときは判定不能として None を返す
         "isIlluminance":  1 if light == LIGHT_BRIGHT else (0 if light == LIGHT_DARK else None),
     }
+
+
+# ------------------------------------------------------------------- 共通処理
+
+# これを下回ったら交換を促す残量 (%)
+LOW_BATTERY_THRESHOLD = 20
+
+
+def battery_note(battery):
+    """バッテリー残量に添える注記を返す。注記不要なら空文字。
+
+    開閉センサーの一部個体はアドバタイズに残量を載せず常に 0 を返す。これを
+    「残量 0%」として警告すると毎回鳴り続けるため、0 は未取得として扱う。
+    """
+    if battery == 0:
+        return "  ※この個体は残量を送信していません"
+    if battery <= LOW_BATTERY_THRESHOLD:
+        return f"  ※残り少なくなっています (閾値 {LOW_BATTERY_THRESHOLD}%)"
+    return ""

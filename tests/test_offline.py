@@ -144,6 +144,16 @@ assert sc_proto.parse_contact(bytes([0x73, 0, 0, 0, 0, 0, 0, 0, 0])) is None
 print("人感センサー OK (種別バイトで取り違えない)")
 
 print()
+print("=== バッテリーの注記 ===")
+for b, want_warn in ((0, False), (19, True), (20, True), (21, False), (90, False)):
+    note = sc_proto.battery_note(b)
+    print(f"  {b:3}% -> {note or '(注記なし)'}")
+    assert ("残り少なく" in note) == want_warn
+# 0 は「残量 0%」ではなく未送信として扱う (毎回警告が鳴るのを避ける)
+assert "残り少なく" not in sc_proto.battery_note(0)
+print("低残量の警告 OK (0 は未送信として扱う)")
+
+print()
 print("=== ボタン押下検出 (1..15 循環) ===")
 s = sc.ContactSensor("aa:bb")
 seq = [3, 3, 4, 4, 15, 1, 1, 2]
