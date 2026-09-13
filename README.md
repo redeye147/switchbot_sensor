@@ -36,6 +36,7 @@ sudo apt install -y python3-venv bluez
 | `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
 | `verify_env.py` | venv がシステムから隔離されているかを診断する |
 | `sitefix.py` | 実行時にシステムの dist-packages を import パスから除外する |
+| `tests/test_offline.py` | BLE ハードウェアなしで解析ロジックを検証する |
 | `docs/SETUP.md` | ラズパイ セットアップ手順とトラブルシューティング |
 
 ## 取得できる値

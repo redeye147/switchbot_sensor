@@ -14,6 +14,7 @@ Python 3.11+) ではビルドに失敗することがあります。bleak は Bl
 import argparse
 import asyncio
 import logging
+import unicodedata
 
 # bleak を import する前に、システムの dist-packages を排除する。
 # PYTHONPATH に /usr/lib/python3/dist-packages が入っていると venv より優先され、
@@ -25,6 +26,23 @@ _STRIPPED = strip_dist_packages()
 from bleak import BleakScanner  # noqa: E402
 
 DEVICE_TYPE_CONTACT = 0x64  # 開閉センサー = 'd'
+
+# SwitchBot がサービスデータに使う 16bit UUID (0xFD3D と旧来の 0x000D)
+SWITCHBOT_SERVICE_UUIDS = {
+    "0000fd3d-0000-1000-8000-00805f9b34fb",
+    "0000000d-0000-1000-8000-00805f9b34fb",
+}
+
+# サービスデータ先頭バイトの既知の種別。網羅ではないので未知は "?" と表示する。
+DEVICE_TYPE_NAMES = {
+    0x48: "Bot",
+    0x54: "温湿度計",
+    0x63: "カーテン",
+    0x64: "開閉センサー",
+    0x73: "人感センサー",
+    0x75: "リモートボタン",
+    0x77: "温湿度計 Plus",
+}
 
 log = logging.getLogger("switchbot")
 
@@ -86,24 +104,46 @@ class ContactSensor:
                 await asyncio.sleep(5)
 
 
+def _pad(text, width):
+    """全角を2桁として数え、表示幅を揃える。"""
+    w = sum(2 if unicodedata.east_asian_width(c) in "FWA" else 1 for c in text)
+    return text + " " * max(0, width - w)
+
+
 async def discover_switchbots(seconds=10):
-    """周囲の SwitchBot デバイスを列挙して MAC アドレスを調べる。"""
-    found = {}
+    """周囲のデバイスを列挙する。SwitchBot はサービスデータの UUID で判別する。"""
+    switchbots = {}
+    others = {}
 
     def cb(device, adv):
-        for payload in adv.service_data.values():
-            if len(payload) >= 3:
-                found[device.address] = (payload[0] & 0x7F, adv.rssi)
+        addr = device.address.lower()
+        for uuid, payload in adv.service_data.items():
+            if uuid.lower() in SWITCHBOT_SERVICE_UUIDS and payload:
+                switchbots[addr] = (payload[0] & 0x7F, uuid.lower(), adv.rssi)
+                return
+        uuids = sorted(u.lower()[4:8] for u in adv.service_data)
+        others[addr] = (adv.local_name, adv.rssi, uuids)
 
     async with BleakScanner(cb):
         await asyncio.sleep(seconds)
 
     print(f"--- {seconds}秒スキャン結果 ---")
-    for addr, (dtype, rssi) in sorted(found.items()):
-        mark = "  <= 開閉センサー" if dtype == DEVICE_TYPE_CONTACT else ""
-        print(f"{addr.lower()}  type=0x{dtype:02x} ({chr(dtype) if 32 <= dtype < 127 else '?'})  rssi={rssi}{mark}")
-    if not found:
-        print("何も見つかりませんでした。Bluetooth が有効か確認してください。")
+    print()
+    print(f"SwitchBot デバイス ({len(switchbots)}件)")
+    if switchbots:
+        for addr, (dtype, uuid, rssi) in sorted(switchbots.items()):
+            name = DEVICE_TYPE_NAMES.get(dtype, "?")
+            char = chr(dtype) if 32 <= dtype < 127 else "?"
+            mark = "   <= これを --mac に指定" if dtype == DEVICE_TYPE_CONTACT else ""
+            print(f"  {addr}  0x{dtype:02x} ({char}) {_pad(name, 14)} rssi={rssi:4}  uuid={uuid[4:8]}{mark}")
+    else:
+        print("  見つかりませんでした。センサーを近づける / 電池を確認してください。")
+
+    print()
+    print(f"その他の BLE デバイス ({len(others)}件) -- SwitchBot ではありません")
+    for addr, (name, rssi, uuids) in sorted(others.items()):
+        tag = ("uuid=" + ",".join(uuids)) if uuids else "service data なし"
+        print(f"  {addr}  rssi={rssi:4}  {tag}  {name or ''}")
 
 
 def print_state(data):
