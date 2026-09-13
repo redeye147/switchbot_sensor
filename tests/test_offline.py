@@ -172,6 +172,29 @@ assert sc_proto.parse_motion(bytes([0x63, 0, 0, 0, 0, 0])) is None
 print("カーテン OK (Curtain 3 と他機種は弾く)")
 
 print()
+print("=== プラグミニ (plugmini.md) ===")
+# MAC + seq=5 + ON + タイマー/UTC同期 + wifi rssi -58 + 消費電力 456 (45.6W)
+md = bytes([0xd8, 0x3b, 0xda, 0x25, 0xd9, 0xe6, 5, 0x80, 0b110, 256 - 58, 456 >> 8, 456 & 0xFF])
+pl = sc_proto.parse_plug(md)
+print("  ", pl)
+assert pl["mac"] == "d8:3b:da:25:d9:e6" and pl["sequence"] == 5
+assert pl["isOn"] == 1 and pl["hasTimer"] == 1 and pl["hasDelay"] == 0 and pl["utcSynced"] == 1
+assert pl["powerRaw"] == 456 and pl["powerW"] == 45.6
+assert pl["isOverload"] == 0
+
+# Wi-Fi RSSI は符号付き (0 未満になる)
+assert pl["wifiRssi"] == -58
+
+# OFF と過負荷。過負荷ビットは消費電力に混ざらない (電力は 15bit)
+off = sc_proto.parse_plug(bytes([0] * 6 + [1, 0x00, 0, 0, 0x80 | 0x7F, 0xFF]))
+print(f"   OFF: isOn={off['isOn']} 過負荷={off['isOverload']} 電力生値={off['powerRaw']}")
+assert off["isOn"] == 0 and off["isOverload"] == 1 and off["powerRaw"] == 0x7FFF
+
+# 短いペイロードは弾く (他機種のメーカー固有データを誤読しない)
+assert sc_proto.parse_plug(b"\x01\x02") is None
+print("プラグミニ OK")
+
+print()
 print("=== バッテリーの注記 ===")
 for b, want_warn in ((0, False), (19, True), (20, True), (21, False), (90, False)):
     note = sc_proto.battery_note(b)

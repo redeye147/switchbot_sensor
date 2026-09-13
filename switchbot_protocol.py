@@ -9,6 +9,7 @@ https://github.com/OpenWonderLabs/SwitchBotAPI-BLE
   開閉センサー (contactsensor.md)  parse_contact()
   人感センサー (motionsensor.md)   parse_motion()
   カーテン     (curtain.md)       parse_curtain()
+  プラグミニ   (plugmini.md)      parse_plug()   ※メーカー固有データ側
 """
 
 # 開閉センサーの種別。'd' = 常時アドバタイズモード、'D' = ペアリングモード。
@@ -171,6 +172,67 @@ def parse_curtain(payload: bytes):
         "position":      payload[3] & 0b01111111,          # 現在位置 %
         "lightLevel":   (payload[4] >> 4) & 0b1111,        # 明るさ 1..10
         "deviceChain":   payload[4] & 0b1111,              # チェーン数
+    }
+
+
+# ----------------------------------------------------------------- プラグミニ
+
+# プラグミニの種別 (サービスデータ側)。JP と US で別の文字が割り当てられている。
+DEVICE_TYPE_PLUG_JP = 0x6A          # 'j'
+DEVICE_TYPE_PLUG_JP_PAIRING = 0x4A  # 'J'
+DEVICE_TYPE_PLUG_US = 0x67          # 'g'
+DEVICE_TYPE_PLUG_US_PAIRING = 0x47  # 'G'
+
+# BLE のメーカー固有データに使われる SwitchBot の company ID
+SWITCHBOT_COMPANY_ID = 0x0969
+
+# 消費電力の生値をワットに直す係数。0.1W 単位という前提 (実機で要確認)。
+POWER_UNIT_W = 0.1
+
+
+def parse_plug(payload: bytes):
+    """SwitchBot プラグミニのメーカー固有データを解析する。対象外なら None。
+
+    他機種と異なり、プラグミニは **サービスデータではなくメーカー固有データ**
+    (company ID 0x0969) に状態を載せる。
+
+    出典: devicetypes/plugmini.md ("Plug Mini Broadcast Message")
+
+    仕様書は company ID を含む生の AD ペイロードで位置を数えているが、bleak の
+    adv.manufacturer_data[0x0969] は company ID の 2 バイトを除いた中身を返す。
+    そのため以下の位置は仕様書の Byte 番号から 2 を引いたものになる。
+
+        [0]〜[5]   デバイスの MAC アドレス (ビッグエンディアン)
+        [6]        シーケンス番号 1〜255 (更新のたびに増加し 255 の次は 1)
+        [7]        電源状態  0x00=OFF / 0x80=ON
+        [8] bit0   ディレイ設定あり
+            bit1   タイマー設定あり
+            bit2   UTC 時刻が同期済み
+        [9]        接続中の Wi-Fi の RSSI
+        [10] bit7     過負荷 (15A 超)
+             bit[6:0] 消費電力の上位ビット
+        [11]          消費電力の下位8ビット
+
+    消費電力の単位は仕様書に明記がない。一般には 0.1W 単位とされるため
+    powerW を併記するが、既知の負荷をつないで確認すること。
+    """
+    if len(payload) < 12:
+        return None
+
+    power_raw = ((payload[10] & 0b01111111) << 8) | payload[11]
+
+    return {
+        "mac":        ":".join(f"{b:02x}" for b in payload[0:6]),
+        "sequence":    payload[6],
+        "isOn":        1 if payload[7] == 0x80 else 0,
+        "stateByte":   payload[7],                     # 0x00 / 0x80 以外が来たとき用
+        "hasDelay":    payload[8] & 0b001,
+        "hasTimer":   (payload[8] & 0b010) >> 1,
+        "utcSynced":  (payload[8] & 0b100) >> 2,
+        "wifiRssi":    payload[9] - 256 if payload[9] > 127 else payload[9],
+        "isOverload": (payload[10] >> 7) & 1,          # 15A 超
+        "powerRaw":    power_raw,                      # 生値
+        "powerW":      round(power_raw * POWER_UNIT_W, 1),
     }
 
 # ------------------------------------------------------------------- 共通処理

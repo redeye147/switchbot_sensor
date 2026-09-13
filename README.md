@@ -12,6 +12,7 @@ SwitchBot デバイスは BLE のアドバタイジングパケットにセン�
 | 開閉センサー (Contact Sensor) | `0x64` (`'d'`) | `switchbot_contact.py` |
 | 人感センサー (Motion Sensor) | `0x73` (`'s'`) | `switchbot_motion.py` |
 | カーテン (Curtain / Curtain2) | `0x63` (`'c'`) | `switchbot_curtain.py` |
+| プラグミニ (Plug Mini) | `0x6A` (`'j'` JP) / `0x67` (`'g'` US) | `switchbot_plug.py` |
 
 ## クイックスタート
 
@@ -26,6 +27,7 @@ sudo apt install -y python3-venv bluez
 ./venv/bin/python switchbot_contact.py --mac c4:88:9c:aa:ab:2f   # 開閉センサー
 ./venv/bin/python switchbot_motion.py  --mac d2:dc:22:fd:6d:d1   # 人感センサー
 ./venv/bin/python switchbot_curtain.py --mac dc:87:13:08:75:83   # カーテン
+./venv/bin/python switchbot_plug.py    --watch                   # プラグミニ全台
 ```
 
 詳細なセットアップと自動起動の設定は [docs/SETUP.md](docs/SETUP.md) を参照。
@@ -37,6 +39,7 @@ sudo apt install -y python3-venv bluez
 | `switchbot_contact.py` | **推奨実装**。bleak (BlueZ D-Bus) 版。root 権限不要 |
 | `switchbot_motion.py` | 人感センサー用。bleak 版 |
 | `switchbot_curtain.py` | カーテン用。bleak 版 |
+| `switchbot_plug.py` | プラグミニ用。複数台を同時監視できる |
 | `switchbot_contact_bluepy.py` | bluepy 版。旧実装互換。root 権限または setcap が必要 |
 | `systemd/switchbot-contact.service` | 自動起動用 systemd ユニット |
 | `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
@@ -205,6 +208,71 @@ secSincePir = ([5] bit7 << 16) | ([3] << 8) | [4]
 
 `[3]` は bit7 が動作状態、bit[6:0] が位置です。バイトをそのまま位置として読むと、
 **動作中に位置が +128 された値**になります (例: 位置30% が 158 と表示される)。
+
+## プラグミニ
+
+プラグミニは Wi-Fi 機器ですが、状態を **BLE でもアドバタイズ**しています。本リポジトリ
+はそれを受信するだけなので、クラウド連携もトークンも不要です。**ON/OFF の操作は
+できません** (受信専用)。
+
+### 他機種と構造が違います
+
+センサー類は **サービスデータ** に値を載せますが、**プラグミニは
+メーカー固有データ (company ID `0x0969`) に載せます**。同じ `--raw` で両方
+ダンプできますが、解析対象のバイト列が別物である点に注意してください。
+
+```bash
+./venv/bin/python switchbot_plug.py --scan     # 周囲のプラグミニを一覧
+./venv/bin/python switchbot_plug.py --watch    # 見つかった全台をまとめて監視
+./venv/bin/python switchbot_plug.py --mac AA:.. --mac BB:..   # 台を指定
+```
+
+| キー | 意味 |
+|---|---|
+| `isOn` | 電源 ON=1 / OFF=0 |
+| `powerW` | 消費電力 W ([注記](#消費電力の単位)) |
+| `powerRaw` | 消費電力の生値 |
+| `isOverload` | 過負荷 (15A 超)=1 |
+| `hasTimer` / `hasDelay` | タイマー / ディレイ設定の有無 |
+| `utcSynced` | UTC 時刻が同期済みか |
+| `wifiRssi` | 接続中の Wi-Fi の RSSI |
+| `sequence` | シーケンス番号 1〜255 (更新のたびに増加) |
+| `mac` | ペイロードに入っている MAC アドレス |
+
+### メーカー固有データのバイト配置 (プラグミニ)
+
+**出典:** [OpenWonderLabs/SwitchBotAPI-BLE](https://github.com/OpenWonderLabs/SwitchBotAPI-BLE)
+→ `devicetypes/plugmini.md`
+
+仕様書は company ID を含む生の AD ペイロードで位置を数えていますが、bleak の
+`adv.manufacturer_data[0x0969]` は **company ID の 2 バイトを除いた中身**を返します。
+下表はその前提の位置です (仕様書の Byte 番号 − 2)。
+
+| 位置 | 内容 |
+|---|---|
+| `[0]`〜`[5]` | デバイスの MAC アドレス (ビッグエンディアン) |
+| `[6]` | シーケンス番号 1〜255 |
+| `[7]` | 電源状態 `0x00`=OFF / `0x80`=ON |
+| `[8]` bit0 / bit1 / bit2 | ディレイ / タイマー / UTC 同期 |
+| `[9]` | 接続中の Wi-Fi の RSSI |
+| `[10]` bit7 | **過負荷** (15A 超) |
+| `[10]` bit[6:0] + `[11]` | **消費電力** (15bit) |
+
+#### 消費電力の単位
+
+単位は公式仕様に**明記がありません**。一般に **0.1W 単位**とされるため `powerW` を
+併記していますが、**既知の負荷 (白熱電球やドライヤーなど W 数の分かるもの) を
+つないで確認してください**。生値は `powerRaw` で確認できます。
+
+#### 過負荷ビットは消費電力に混ざります
+
+`[10]` は bit7 が過負荷、bit[6:0] が電力の上位ビットです。`[10][11]` を素直に
+16bit として読むと、**過負荷時に電力が +32768 された値**になります。
+
+#### 表示が多くなりすぎないように
+
+消費電力は常に微動するため、既定では **1.0W 以上動いたとき**か電源状態などが
+変わったときだけ表示します。毎パケット見るには `--all` を付けてください。
 
 ### ボタン押下の検出
 
