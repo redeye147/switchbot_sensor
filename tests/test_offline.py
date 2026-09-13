@@ -190,9 +190,23 @@ off = sc_proto.parse_plug(bytes([0] * 6 + [1, 0x00, 0, 0, 0x80 | 0x7F, 0xFF]))
 print(f"   OFF: isOn={off['isOn']} 過負荷={off['isOverload']} 電力生値={off['powerRaw']}")
 assert off["isOn"] == 0 and off["isOverload"] == 1 and off["powerRaw"] == 0x7FFF
 
-# 短いペイロードは弾く (他機種のメーカー固有データを誤読しない)
+# 短いペイロードは弾く
 assert sc_proto.parse_plug(b"\x01\x02") is None
-print("プラグミニ OK")
+
+# Wi-Fi RSSI が正の値なら不正なデータとして弾く。
+# 実機の開閉センサーが「プラグ・1302W」として誤検出された際の症状。
+bad = bytes([0xc4, 0x88, 0x9c, 0xaa, 0xab, 0x2f, 1, 0x00, 0, 51, 0x32, 0xd6])
+print("   正の wifi rssi を持つデータ ->", sc_proto.parse_plug(bad))
+assert sc_proto.parse_plug(bad) is None
+
+# 機種の判別はサービスデータ側で行う (メーカー固有データからは判別できない)
+FD3D_U = "0000FD3D-0000-1000-8000-00805F9B34FB"   # 大文字でも拾えること
+assert sc_proto.service_device_type({FD3D_U: bytes([0x67, 0, 0])}) == 0x67
+assert sc_proto.service_device_type({FD3D: pkt(CAPTURE[0][1])}) == 0x64
+assert sc_proto.service_device_type({OTHER: b"\x67\x00"}) is None
+assert sc_proto.service_device_type({}) is None
+print("   機種の判別:", sc_proto.DEVICE_TYPE_NAMES[0x67], "/", sc_proto.DEVICE_TYPE_NAMES[0x64])
+print("プラグミニ OK (機種バイトと RSSI で誤検出を防ぐ)")
 
 print()
 print("=== バッテリーの注記 ===")

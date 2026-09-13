@@ -219,6 +219,14 @@ def parse_plug(payload: bytes):
     if len(payload) < 12:
         return None
 
+    # RSSI は 0 以下にしかならない。正の値が入っていたらプラグミニのデータでは
+    # ない。SwitchBot は全機種が company ID 0x0969 のメーカー固有データを出して
+    # おり、しかも先頭6バイトは自分の MAC なので、長さや MAC 一致だけでは他機種
+    # と区別できない。機種の判別は service_device_type() で行うこと。
+    wifi_rssi = payload[9] - 256 if payload[9] > 127 else payload[9]
+    if wifi_rssi > 0:
+        return None
+
     power_raw = ((payload[10] & 0b01111111) << 8) | payload[11]
 
     return {
@@ -229,11 +237,51 @@ def parse_plug(payload: bytes):
         "hasDelay":    payload[8] & 0b001,
         "hasTimer":   (payload[8] & 0b010) >> 1,
         "utcSynced":  (payload[8] & 0b100) >> 2,
-        "wifiRssi":    payload[9] - 256 if payload[9] > 127 else payload[9],
+        "wifiRssi":    wifi_rssi,
         "isOverload": (payload[10] >> 7) & 1,          # 15A 超
         "powerRaw":    power_raw,                      # 生値
         "powerW":      round(power_raw * POWER_UNIT_W, 1),
     }
+
+# ------------------------------------------------------------- 機種の判別
+
+# SwitchBot がサービスデータに使う 16bit UUID (0xFD3D と旧来の 0x000D)。
+# Bot V6.4 / Curtain V4.6 / Meter V2.7 以降で 0x000D から 0xFD3D に変更された。
+SWITCHBOT_SERVICE_UUIDS = {
+    "0000fd3d-0000-1000-8000-00805f9b34fb",
+    "0000000d-0000-1000-8000-00805f9b34fb",
+}
+
+# 公式の機種一覧 (SwitchBotAPI-BLE の README "Device Types")。
+# 大文字はペアリングモード、小文字は常時アドバタイズモードの対になっている。
+DEVICE_TYPE_NAMES = {
+    0x48: "Bot",
+    0x54: "温湿度計 (Meter)",
+    0x65: "加湿器 (Humidifier)",
+    0x63: "カーテン (Curtain)",
+    0x7B: "カーテン 3 (Curtain 3)",
+    0x73: "人感センサー (Motion Sensor)",
+    0x64: "開閉センサー (Contact Sensor)",
+    0x75: "スマート電球 (Color Bulb)",
+    0x72: "テープライト (LED Strip Light)",
+    0x6F: "スマートロック (Smart Lock)",
+    0x67: "プラグミニ (Plug Mini)",
+    0x69: "温湿度計プラス (Meter Plus)",
+    # 以下は公式一覧に無い。実機で観測される値を参考として持つ。
+    0x6A: "プラグミニ JP ? (公式一覧に無い種別)",
+}
+
+
+def service_device_type(service_data):
+    """アドバタイズのサービスデータから機種バイトを取り出す。無ければ None。
+
+    service_data は bleak の adv.service_data (UUID 文字列 -> bytes) を想定する。
+    """
+    for uuid, payload in service_data.items():
+        if uuid.lower() in SWITCHBOT_SERVICE_UUIDS and payload:
+            return payload[0] & 0x7F
+    return None
+
 
 # ------------------------------------------------------------------- 共通処理
 

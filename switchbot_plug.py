@@ -27,9 +27,29 @@ from bleak import BleakScanner  # noqa: E402
 
 from switchbot_protocol import (  # noqa: E402
     DEVICE_TYPE_PLUG_JP,
+    DEVICE_TYPE_PLUG_JP_PAIRING,
+    DEVICE_TYPE_PLUG_US,
+    DEVICE_TYPE_PLUG_US_PAIRING,
     SWITCHBOT_COMPANY_ID,
     parse_plug,
+    service_device_type,
 )
+
+# プラグミニとみなす機種バイト。公式一覧にあるのは 'g'(0x67) のみ。'j'(0x6A) は
+# 実機で観測される JP 版とされる値で、公式の裏付けが無い。
+PLUG_DEVICE_TYPES = {
+    DEVICE_TYPE_PLUG_US, DEVICE_TYPE_PLUG_US_PAIRING,
+    DEVICE_TYPE_PLUG_JP, DEVICE_TYPE_PLUG_JP_PAIRING,
+}
+
+
+def is_plug(adv):
+    """サービスデータの機種バイトでプラグミニか判定する。
+
+    メーカー固有データは SwitchBot 全機種が company ID 0x0969 で出しており、
+    先頭6バイトも一様に自分の MAC なので、それだけでは機種を判別できない。
+    """
+    return service_device_type(adv.service_data) in PLUG_DEVICE_TYPES
 from switchbot_contact import discover_switchbots, print_raw  # noqa: E402
 
 log = logging.getLogger("switchbot")
@@ -51,6 +71,9 @@ class PlugMini:
     def _handle(self, device, adv):
         addr = device.address.lower()
         if self.macs and addr not in self.macs:
+            return
+
+        if not is_plug(adv):
             return
 
         payload = adv.manufacturer_data.get(SWITCHBOT_COMPANY_ID)
@@ -134,20 +157,24 @@ async def find_plugs(seconds=10):
     found = {}
 
     def cb(device, adv):
+        if not is_plug(adv):
+            return
         payload = adv.manufacturer_data.get(SWITCHBOT_COMPANY_ID)
         if payload is None:
             return
         data = parse_plug(payload)
         if data:
-            found[device.address.lower()] = (data, adv.rssi)
+            found[device.address.lower()] = (data, adv.rssi, service_device_type(adv.service_data))
 
     async with BleakScanner(cb):
         await asyncio.sleep(seconds)
 
     print(f"--- {seconds}秒スキャン結果: プラグミニ {len(found)}台 ---")
-    for addr, (d, rssi) in sorted(found.items()):
+    for addr, (d, rssi, dtype) in sorted(found.items()):
         state = "ON " if d["isOn"] else "OFF"
-        print(f"  {addr}  {state}  {d['powerW']:7.1f} W  wifi_rssi={d['wifiRssi']:4}  ble_rssi={rssi:4}")
+        char = chr(dtype) if 32 <= dtype < 127 else "?"
+        print(f"  {addr}  0x{dtype:02x} ({char})  {state}  {d['powerW']:7.1f} W  "
+              f"wifi_rssi={d['wifiRssi']:4}  ble_rssi={rssi:4}")
     if not found:
         print("  見つかりませんでした。プラグミニが通電しているか確認してください。")
     return sorted(found)

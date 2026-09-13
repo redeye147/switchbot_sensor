@@ -32,32 +32,12 @@ from switchbot_protocol import (  # noqa: E402
     DOOR_CLOSED,
     DOOR_OPEN,
     DOOR_TIMEOUT,
+    DEVICE_TYPE_NAMES,
     DOOR_STATE_NAMES,
+    SWITCHBOT_SERVICE_UUIDS,
     battery_note,
     parse_contact,
 )
-
-SWITCHBOT_SERVICE_UUIDS = {
-    "0000fd3d-0000-1000-8000-00805f9b34fb",
-    "0000000d-0000-1000-8000-00805f9b34fb",
-}
-
-# サービスデータ先頭バイトの既知の種別。網羅ではないので未知は "?" と表示する。
-DEVICE_TYPE_NAMES = {
-    0x43: "カーテン (ペアリング)",
-    0x47: "プラグミニ US (ペアリング)",
-    0x48: "Bot",
-    0x4A: "プラグミニ JP (ペアリング)",
-    0x53: "人感センサー (ペアリング)",
-    0x54: "温湿度計",
-    0x63: "カーテン",
-    0x64: "開閉センサー",
-    0x67: "プラグミニ US",
-    0x6A: "プラグミニ JP",
-    0x73: "人感センサー",
-    0x75: "リモートボタン",
-    0x77: "温湿度計 Plus",
-}
 
 log = logging.getLogger("switchbot")
 
