@@ -10,6 +10,13 @@ cd "$(dirname "$0")"
 
 VENV=venv
 
+if [ -n "${PYTHONPATH:-}" ]; then
+    echo "警告: PYTHONPATH が設定されています -> $PYTHONPATH"
+    echo "      これは venv の site-packages より優先されるため、システム側の古い"
+    echo "      パッケージを掴む原因になります。~/.bashrc 等の設定を確認してください。"
+    echo
+fi
+
 if [ -d "$VENV" ]; then
     echo "既存の $VENV を作り直します"
     rm -rf "$VENV"

@@ -7,6 +7,8 @@ Wants=bluetooth.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/switchbot_sensor
+# .bashrc は読まれないが、システムの dist-packages が混入しないよう明示する
+Environment=PYTHONPATH=
 ExecStart=/home/pi/switchbot_sensor/venv/bin/python /home/pi/switchbot_sensor/switchbot_contact.py --mac c4:88:9c:aa:ab:2f
 Restart=always
 RestartSec=5

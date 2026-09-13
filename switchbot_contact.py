@@ -14,7 +14,15 @@ Python 3.11+) ではビルドに失敗することがあります。bleak は Bl
 import argparse
 import asyncio
 import logging
-from bleak import BleakScanner
+
+# bleak を import する前に、システムの dist-packages を排除する。
+# PYTHONPATH に /usr/lib/python3/dist-packages が入っていると venv より優先され、
+# 古い typing_extensions を掴んで bleak が ImportError になるため。
+from sitefix import strip_dist_packages
+
+_STRIPPED = strip_dist_packages()
+
+from bleak import BleakScanner  # noqa: E402
 
 DEVICE_TYPE_CONTACT = 0x64  # 開閉センサー = 'd'
 
@@ -130,6 +138,11 @@ async def main():
         return
     if not args.mac:
         ap.error("--mac を指定するか、--scan で MAC アドレスを調べてください")
+
+    if _STRIPPED:
+        log.warning("システムの dist-packages を import パスから除外しました: %s",
+                    ", ".join(_STRIPPED))
+        log.warning("PYTHONPATH の設定を見直すことをおすすめします (README 参照)")
 
     log.info("%s の受信を開始します (Ctrl-C で終了)", args.mac.lower())
     await ContactSensor(args.mac, on_update=print_state).run()

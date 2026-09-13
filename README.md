@@ -34,7 +34,8 @@ sudo apt install -y python3-venv bluez
 | `switchbot_contact_bluepy.py` | bluepy 版。旧実装互換。root 権限または setcap が必要 |
 | `systemd/switchbot-contact.service` | 自動起動用 systemd ユニット |
 | `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
-| `verify_env.py` | venv がシステムから隔離されているかを検証する |
+| `verify_env.py` | venv がシステムから隔離されているかを診断する |
+| `sitefix.py` | 実行時にシステムの dist-packages を import パスから除外する |
 | `docs/SETUP.md` | ラズパイ セットアップ手順とトラブルシューティング |
 
 ## 取得できる値

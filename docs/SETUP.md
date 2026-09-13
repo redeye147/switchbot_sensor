@@ -92,6 +92,58 @@ sudo setcap 'cap_net_raw,cap_net_admin+eip' "$HELPER"
 | たまに値が取れない | BLE アドバタイズは取りこぼすもの。前回値を保持して使う設計にする |
 | 出力が多すぎる | bleak 版は受信のたびに表示する。`print_state` の先頭で前回値と比較し、変化時のみ出力する |
 | センサーが遠い | rssi が -90 を下回ると不安定。-70 前後を目安に設置する |
-| `ImportError: cannot import name 'Buffer' from 'typing_extensions'` | システムの古い typing_extensions が venv より優先されている。`./setup.sh` で venv を作り直す |
+| `ImportError: cannot import name 'Buffer' from 'typing_extensions'` | `PYTHONPATH` に `/usr/lib/python3/dist-packages` が入っており、venv より優先されている。下記「PYTHONPATH の罠」を参照 |
 | pip が `Not uninstalling ... outside environment` と言う | 同上。venv に dist-packages が漏れているサイン |
 | `-bash: 予期しないトークン \`newline' 周辺に構文エラー` | `--mac <MAC>` の山括弧をそのまま貼り付けている。`<` はリダイレクト記号なので外して `--mac c4:88:9c:aa:ab:2f` と書く |
+
+---
+
+## PYTHONPATH の罠 (Raspberry Pi OS でよくある)
+
+`~/.bashrc` に次のような行があると、venv を使っても壊れます。
+
+```bash
+export PYTHONPATH="$PYTHONPATH:/usr/lib/python3/dist-packages"
+```
+
+`PYTHONPATH` は venv の `site-packages` **より優先される**ため、venv に新しい版を
+入れてもシステム側の古い版を掴みます。例えば Bullseye のシステムには
+`typing_extensions 3.7.4.3` が入っており、これが venv の 4.x を隠すと bleak が
+`ImportError: cannot import name 'Buffer'` で落ちます。
+
+### この行は基本的に不要です
+
+`/usr/lib/python3/dist-packages` は**システムの python3 では最初から import パスに
+入っています**。`PYTHONPATH` に足しても増える効果はなく、venv を壊す副作用だけが
+残ります。コメントアウトして問題ありません。
+
+```bash
+sed -i 's|^export PYTHONPATH=.*dist-packages.*|# &|' ~/.bashrc
+exec bash -l          # 設定を反映
+echo "[$PYTHONPATH]"  # [] になれば OK
+```
+
+### 他のプロジェクトがこれに依存している場合
+
+apt で入れたシステムパッケージ (`python3-picamera2`, `python3-rpi.gpio` など) を
+venv から使うためにこの行を足していた場合は、削除する代わりに **そのプロジェクトの
+venv だけ** システムパッケージを見えるように作り直してください。
+
+```bash
+python3 -m venv --system-site-packages venv
+```
+
+こちらが本来の方法で、`PYTHONPATH` を汚さずに済みます。
+
+### 先頭のコロンにも注意
+
+`PYTHONPATH=":/usr/lib/python3/dist-packages"` のように先頭が `:` になっていると、
+空要素として**カレントディレクトリ**が import パスに入ります。意図しないファイルが
+モジュールとして読まれる原因になるため、これも直しておくとよいです。
+
+### 本リポジトリ側の対策
+
+`sitefix.py` が `switchbot_contact.py` の起動時に `dist-packages` を import パスから
+除外するため、`PYTHONPATH` が設定されたままでも動作します。ただし根本原因は残るので、
+上記の恒久対応をおすすめします。systemd ユニットは `.bashrc` を読まないため影響を
+受けませんが、明示的に `Environment=PYTHONPATH=` を設定してあります。

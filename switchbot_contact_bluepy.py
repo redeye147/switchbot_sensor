@@ -12,7 +12,13 @@ SwitchBot 開閉センサー BLE スキャナ (bluepy 版 / 元コードの修�
 実行には root 権限 (sudo) か bluepy-helper への setcap が必要です。
 """
 import time as _time
-from bluepy.btle import Scanner, DefaultDelegate, BTLEException
+
+# bluepy を import する前に、システムの dist-packages を排除する (sitefix.py 参照)
+from sitefix import strip_dist_packages
+
+strip_dist_packages()
+
+from bluepy.btle import Scanner, DefaultDelegate, BTLEException  # noqa: E402
 
 DEVICE_TYPE_CONTACT = 0x64  # 開閉センサー = 'd'
 
