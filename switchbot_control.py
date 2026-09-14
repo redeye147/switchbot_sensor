@@ -76,7 +76,8 @@ def build_command(action, level=None, rgb=None, cw=None):
             payload = bytes([0x12, level, *rgb])
     elif action == "cw":
         # 色温度は 2700〜6500K。1バイトに収まらないので 2 バイトとして送る。
-        # ※ 仕様書の表がバイト位置を明示しておらず、実機で未検証。
+        # 仕様書の表はバイト位置を明示していないが、実機 (Color Bulb) で
+        # 2700 と 6500 の色の違いを確認済み。
         if level is None:
             payload = bytes([0x17]) + cw.to_bytes(2, "big")
         else:
@@ -108,14 +109,24 @@ def describe_response(resp):
     return "\n".join(lines)
 
 
-async def send_command(mac, packet, timeout=10.0):
-    """BLE 接続してコマンドを送り、通知で返る応答を待つ。"""
-    log.info("デバイスを探しています: %s", mac)
-    device = await BleakScanner.find_device_by_address(mac, timeout=15.0)
-    if device is None:
-        raise RuntimeError(
-            f"{mac} が見つかりません。電源と電波の届く範囲を確認してください")
+# BlueZ が一過性で返す接続エラー。直前の接続が切れきる前に繋ぎ直すと出やすい。
+TRANSIENT_ERRORS = (
+    "software caused connection abort",
+    "le-connection-abort-by-local",
+    "connection abort",
+    "device disconnected",
+    "not connected",
+    "operation already in progress",
+    "in progress",
+)
 
+
+def _is_transient(err):
+    text = str(err).lower()
+    return any(m in text for m in TRANSIENT_ERRORS)
+
+
+async def _send_once(device, packet, timeout):
     loop = asyncio.get_running_loop()
     answer = loop.create_future()
 
@@ -123,7 +134,6 @@ async def send_command(mac, packet, timeout=10.0):
         if not answer.done():
             answer.set_result(bytes(data))
 
-    log.info("接続しています")
     async with BleakClient(device) as client:
         await client.start_notify(TX_UUID, on_notify)
         log.info("送信: %s", packet.hex())
@@ -137,6 +147,33 @@ async def send_command(mac, packet, timeout=10.0):
         return resp
 
 
+async def send_command(mac, packet, timeout=10.0, attempts=3):
+    """BLE 接続してコマンドを送り、通知で返る応答を待つ。
+
+    BlueZ は直前の接続が切れきる前に繋ぎ直すと接続を中断することがある。
+    一過性のエラーは間隔を空けて再試行する。
+    """
+    log.info("デバイスを探しています: %s", mac)
+    device = await BleakScanner.find_device_by_address(mac, timeout=15.0)
+    if device is None:
+        raise RuntimeError(
+            f"{mac} が見つかりません。電源と電波の届く範囲を確認してください")
+
+    last = None
+    for attempt in range(1, attempts + 1):
+        try:
+            log.info("接続しています (%d/%d)", attempt, attempts)
+            return await _send_once(device, packet, timeout)
+        except Exception as e:
+            last = e
+            if not _is_transient(e) or attempt == attempts:
+                raise
+            wait = 2 * attempt
+            log.warning("接続に失敗しました (%s) -- %d秒後に再試行します", e, wait)
+            await asyncio.sleep(wait)
+    raise last
+
+
 def parse_args():
     ap = argparse.ArgumentParser(
         description="SwitchBot スマート電球を BLE 接続して制御する",
@@ -145,6 +182,8 @@ def parse_args():
     ap.add_argument("--level", type=int, help="明るさ 0〜100 (rgb / cw と併用可)")
     ap.add_argument("--dry-run", action="store_true",
                     help="接続せず、送信するバイト列だけ表示する")
+    ap.add_argument("--attempts", type=int, default=3,
+                    help="接続の再試行回数 (既定 3)")
     sub = ap.add_subparsers(dest="action", required=True, metavar="動作")
     sub.add_parser("status", help="現在の状態を読む")
     sub.add_parser("on", help="点灯")
@@ -156,7 +195,7 @@ def parse_args():
     p.add_argument("r", type=int)
     p.add_argument("g", type=int)
     p.add_argument("b", type=int)
-    p = sub.add_parser("cw", help="色温度を変える (実機未検証)")
+    p = sub.add_parser("cw", help="色温度を変える 2700=電球色 6500=昼光色")
     p.add_argument("kelvin", type=int, help="2700〜6500")
 
     args = ap.parse_args()
@@ -197,7 +236,7 @@ async def main():
                     ", ".join(_STRIPPED))
 
     try:
-        resp = await send_command(args.mac, packet)
+        resp = await send_command(args.mac, packet, attempts=args.attempts)
     except Exception as e:
         log.error("%s", e)
         raise SystemExit(1)
