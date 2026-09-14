@@ -151,6 +151,8 @@ class StatePrinter:
             print("フォールト    :", data["faultCode"] or "なし")
         print("ネットワーク  :", NETWORK_STATUS_NAMES.get(data["networkStatus"],
                                                           f'? ({data["networkStatus"]})'))
+        print("シーケンス    :", data["sequence"],
+              "(更新のたびに増える。動かない個体は値が古い可能性あり)")
         print("BLE rssi      :", data["rssi"])
         print("-----------", flush=True)
 

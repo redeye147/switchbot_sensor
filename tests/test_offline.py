@@ -281,6 +281,15 @@ assert "消灯" in ctl.describe_response(off_resp)
 assert "RGB       : 0, 0, 255" in ctl.describe_response(blue_resp)
 assert "明るさ    : 50 %" in ctl.describe_response(blue_resp)
 
+# 実機 (Color Bulb) の応答。cw 6500 を送った直後に status で読んだもの。
+real = ctl.describe_response(bytes.fromhex("0180640000001964ffff01"))
+print()
+print(real)
+assert "電源      : 点灯" in real
+assert "明るさ    : 100 %" in real
+assert "色温度    : 6500 K" in real      # 送った cw 6500 が読み戻せている
+assert "モード    : 白色" in real
+
 # エラーステータスは素直に伝える
 assert "デバイスがビジー" in ctl.describe_response(bytes([0x03]))
 assert "パスワード誤り" in ctl.describe_response(bytes([0x09]))
