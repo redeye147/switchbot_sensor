@@ -13,6 +13,8 @@ SwitchBot デバイスは BLE のアドバタイジングパケットにセン�
 | 人感センサー (Motion Sensor) | `0x73` (`'s'`) | `switchbot_motion.py` |
 | カーテン (Curtain / Curtain2) | `0x63` (`'c'`) | `switchbot_curtain.py` |
 | プラグミニ (Plug Mini) | `0x67` (`'g'`) ※`0x6A` も暫定対応 | `switchbot_plug.py` |
+| スマート電球 (Color Bulb) | `0x75` (`'u'`) ※実機未検証 | `switchbot_light.py` |
+| テープライト (LED Strip Light) | `0x72` (`'r'`) ※実機未検証 | `switchbot_light.py` |
 
 ## クイックスタート
 
@@ -28,6 +30,7 @@ sudo apt install -y python3-venv bluez
 ./venv/bin/python switchbot_motion.py  --mac d2:dc:22:fd:6d:d1   # 人感センサー
 ./venv/bin/python switchbot_curtain.py --mac dc:87:13:08:75:83   # カーテン
 ./venv/bin/python switchbot_plug.py    --watch                   # プラグミニ全台
+./venv/bin/python switchbot_light.py   --scan                    # ランプを探す
 ```
 
 詳細なセットアップと自動起動の設定は [docs/SETUP.md](docs/SETUP.md) を参照。
@@ -40,6 +43,7 @@ sudo apt install -y python3-venv bluez
 | `switchbot_motion.py` | 人感センサー用。bleak 版 |
 | `switchbot_curtain.py` | カーテン用。bleak 版 |
 | `switchbot_plug.py` | プラグミニ用。複数台を同時監視できる |
+| `switchbot_light.py` | スマート電球 / テープライト用。実機未検証 |
 | `switchbot_contact_bluepy.py` | bluepy 版。旧実装互換。root 権限または setcap が必要 |
 | `systemd/switchbot-contact.service` | 自動起動用 systemd ユニット |
 | `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
@@ -305,6 +309,82 @@ SwitchBot は **全機種が** company ID `0x0969` のメーカー固有デー�
 
 消費電力は常に微動するため、既定では **1.0W 以上動いたとき**か電源状態などが
 変わったときだけ表示します。毎パケット見るには `--all` を付けてください。
+
+## スマート電球 / テープライト
+
+**実機で未検証です。** 公式仕様書どおりに実装してありますが、手元に機器が無いため
+動作確認が取れていません。値がおかしい場合は `--raw` の出力からバイト配置を
+見直してください。
+
+プラグミニと同じく **メーカー固有データ** に状態が入ります。受信専用で、点灯/消灯
+や色の変更はできません。
+
+```bash
+./venv/bin/python switchbot_light.py --scan      # 周囲のランプを探す
+./venv/bin/python switchbot_light.py --watch     # 見つかった全台を監視
+./venv/bin/python switchbot_light.py --devices   # ランプ以外も含めた SwitchBot 機器一覧
+```
+
+### 共通の値
+
+| キー | 意味 |
+|---|---|
+| `isOn` | 点灯=1 / 消灯=0 |
+| `brightness` | 明るさ 1〜100% |
+| `networkStatus` | 0=Wi-Fi接続中 / 1=IoT接続中 / 2=IoT接続済み |
+| `hasDelay` | ディレイ設定の有無 |
+| `sequence` | シーケンス番号 1〜255 |
+
+### スマート電球のみ
+
+| キー | 意味 |
+|---|---|
+| `lightState` | 1=白色 / 2=カラー / 3=ダイナミック |
+| `dynamicRate` | ダイナミックの速度 1〜100% |
+| `rssiQualityBad` | RSSI 品質 1=不良 |
+| `isPreset` | 点灯状態のプリセット有無 |
+| `loopIndex` | ループ番号 |
+
+### テープライトのみ
+
+| キー | 意味 |
+|---|---|
+| `mode` | 2=カラー / 3=シーン / 4=ミュージック / 5=コントローラー |
+| `colors` | `(R, G, B)` の一覧。最大8色、**各成分は 0〜3** |
+| `faultCode` | 直近のフォールトコード (0=異常なし) |
+
+### メーカー固有データのバイト配置
+
+**出典:** [OpenWonderLabs/SwitchBotAPI-BLE](https://github.com/OpenWonderLabs/SwitchBotAPI-BLE)
+→ `devicetypes/colorbulb.md` / `devicetypes/ledstriplight.md`
+
+プラグミニと同様、下表は仕様書の Byte 番号から 2 を引いた位置です。
+
+| 位置 | 電球 | テープライト |
+|---|---|---|
+| `[0]`〜`[5]` | MAC アドレス | 同左 |
+| `[6]` | シーケンス番号 | 同左 |
+| `[7]` bit7 / bit[6:0] | 電源 / 明るさ | 同左 |
+| `[8]` bit7 / bit[6:4] | ディレイ / ネットワーク状態 | 同左 |
+| `[8]` 下位 | bit3 プリセット, bit[2:0] 点灯モード | bit[3:0] 点灯モード |
+| `[9]` | bit7 RSSI品質, bit[6:0] ダイナミック速度 | 色データの先頭 |
+| `[9]`〜`[14]` | — | 色データ (2bit × 24) |
+| `[10]` bit[7:2] | ループ番号 | — |
+| `[15]` | — | フォールトコード |
+
+#### テープライトの色は 2bit しかありません
+
+`[9]`〜`[14]` の 6 バイトに `R0,G0,B0,R1,G1,B1,...` と **2bit ずつ 24 個**
+詰まっています。つまり各成分は **0〜3 の 4 段階**で、8bit の RGB 値ではありません。
+
+`R:G:B = 0:0:0` の色は「存在しない」を意味するため、`colors` から除いています
+(実際の色数が 8 未満であることを表します)。
+
+#### 電源ビットは明るさに混ざります
+
+`[7]` は bit7 が電源、bit[6:0] が明るさです。カーテンの動作ビットやプラグミニの
+過負荷ビットと同じ構造で、そのまま 1 バイトとして読むと**点灯中だけ明るさが
++128 された値**になります。
 
 ### ボタン押下の検出
 

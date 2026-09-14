@@ -9,7 +9,9 @@ https://github.com/OpenWonderLabs/SwitchBotAPI-BLE
   開閉センサー (contactsensor.md)  parse_contact()
   人感センサー (motionsensor.md)   parse_motion()
   カーテン     (curtain.md)       parse_curtain()
-  プラグミニ   (plugmini.md)      parse_plug()   ※メーカー固有データ側
+  プラグミニ   (plugmini.md)      parse_plug()    ※メーカー固有データ側
+  スマート電球 (colorbulb.md)     parse_bulb()    ※同上
+  テープライト (ledstriplight.md) parse_strip()   ※同上
 """
 
 # 開閉センサーの種別。'd' = 常時アドバタイズモード、'D' = ペアリングモード。
@@ -246,6 +248,115 @@ def parse_plug(payload: bytes):
         "powerRaw":    power_raw,                      # 生値
         "powerW":      round(power_raw * POWER_UNIT_W, 1),
     }
+
+
+# ----------------------------------------------------- スマート電球 / テープライト
+
+DEVICE_TYPE_BULB = 0x75           # 'u' スマート電球
+DEVICE_TYPE_BULB_PAIRING = 0x55   # 'U'
+DEVICE_TYPE_STRIP = 0x72          # 'r' テープライト
+DEVICE_TYPE_STRIP_PAIRING = 0x52  # 'R'
+
+# [8] bit[6:4] ネットワーク状態 (電球・テープライト共通)
+NETWORK_STATUS_NAMES = {
+    0: "Wi-Fi 接続中", 1: "IoT 接続中", 2: "IoT 接続済み",
+}
+
+# 電球 [8] bit[2:0] 点灯モード
+BULB_LIGHT_STATE_NAMES = {1: "白色", 2: "カラー", 3: "ダイナミック"}
+
+# テープライト [8] bit[3:0] 点灯モード
+STRIP_MODE_NAMES = {2: "カラー", 3: "シーン", 4: "ミュージック", 5: "コントローラー"}
+
+
+def _common_light_fields(payload):
+    """電球とテープライトで共通の先頭部分を読む。"""
+    return {
+        "mac":       ":".join(f"{b:02x}" for b in payload[0:6]),
+        "sequence":   payload[6],
+        "isOn":      (payload[7] >> 7) & 1,             # 点灯=1
+        "brightness": payload[7] & 0b01111111,          # 明るさ 1..100%
+        "hasDelay":  (payload[8] >> 7) & 1,
+        "networkStatus": (payload[8] >> 4) & 0b111,     # 0..2
+    }
+
+
+def parse_bulb(payload: bytes):
+    """SwitchBot スマート電球 (Color Bulb) のメーカー固有データを解析する。
+
+    出典: devicetypes/colorbulb.md ("Color Bulb Broadcast Message")
+
+    プラグミニと同じく、状態は **サービスデータではなくメーカー固有データ**
+    (company ID 0x0969) に入る。下表の位置は仕様書の Byte 番号から 2 を引いた
+    もの (bleak は company ID の 2 バイトを除いた中身を返すため)。
+
+        [0]〜[5]   MAC アドレス
+        [6]        シーケンス番号 1〜255
+        [7] bit7     電源  0=消灯 / 1=点灯
+            bit[6:0] 明るさ 1〜100%
+        [8] bit7     ディレイ設定あり
+            bit[6:4] ネットワーク状態 0=Wi-Fi接続中 / 1=IoT接続中 / 2=IoT接続済み
+            bit3     点灯状態のプリセット有無
+            bit[2:0] 点灯モード 1=白色 / 2=カラー / 3=ダイナミック
+        [9] bit7     RSSI 品質 0=正常 / 1=不良
+            bit[6:0] ダイナミックの速度 1〜100%
+        [10] bit[7:2] ループ番号
+
+    ※ 実機で未検証。機種の判別は service_device_type() で行うこと。
+    """
+    if len(payload) < 11:
+        return None
+
+    data = _common_light_fields(payload)
+    data.update({
+        "isPreset":     (payload[8] >> 3) & 1,
+        "lightState":    payload[8] & 0b111,            # 1=白色 2=カラー 3=ダイナミック
+        "rssiQualityBad": (payload[9] >> 7) & 1,        # 1=不良
+        "dynamicRate":   payload[9] & 0b01111111,       # 1..100%
+        "loopIndex":    (payload[10] >> 2) & 0b111111,
+    })
+    return data
+
+
+def _unpack_2bit_colors(payload):
+    """テープライトの 2bit x 24 の色データを (R,G,B) x 8 に展開する。
+
+    [9]〜[14] の 6 バイトに R0,G0,B0,R1,G1,B1,... と 2bit ずつ詰まっている。
+    R:G:B が 0:0:0 の色は「存在しない」= 実際の色数が 8 未満であることを表す。
+    """
+    bits = int.from_bytes(payload[9:15], "big")         # 48bit
+    vals = [(bits >> (46 - 2 * i)) & 0b11 for i in range(24)]
+    colors = [tuple(vals[i:i + 3]) for i in range(0, 24, 3)]
+    return [c for c in colors if c != (0, 0, 0)]
+
+
+def parse_strip(payload: bytes):
+    """SwitchBot テープライト (LED Strip Light) のメーカー固有データを解析する。
+
+    出典: devicetypes/ledstriplight.md ("LED Strip Light Broadcast Message")
+
+        [0]〜[5]   MAC アドレス
+        [6]        シーケンス番号 1〜255
+        [7] bit7     電源  0=消灯 / 1=点灯
+            bit[6:0] 明るさ 1〜100%
+        [8] bit7     ディレイ設定あり
+            bit[6:4] ネットワーク状態
+            bit[3:0] 点灯モード 2=カラー / 3=シーン / 4=ミュージック / 5=コントローラー
+        [9]〜[14]  色データ。2bit x 24 で (R,G,B) が最大 8 色
+        [15]       直近のフォールトコード (0=異常なし)
+
+    ※ 実機で未検証。機種の判別は service_device_type() で行うこと。
+    """
+    if len(payload) < 16:
+        return None
+
+    data = _common_light_fields(payload)
+    data.update({
+        "mode":       payload[8] & 0b1111,              # 2=カラー 3=シーン ...
+        "colors":     _unpack_2bit_colors(payload),     # (R,G,B) の一覧。各成分 0..3
+        "faultCode":  payload[15],                      # 0=異常なし
+    })
+    return data
 
 # ------------------------------------------------------------- 機種の判別
 

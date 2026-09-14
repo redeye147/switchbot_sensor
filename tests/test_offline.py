@@ -219,6 +219,41 @@ assert sc_proto.parse_curtain(plug_sd) is None
 print("プラグミニ OK (機種バイトで誤検出を防ぐ)")
 
 print()
+print("=== スマート電球 / テープライト ===")
+MAC6 = bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
+# 電球: 点灯 明るさ80% / IoT接続済み + プリセット + カラー / ダイナミック50% / ループ4
+b = sc_proto.parse_bulb(MAC6 + bytes([7, 0x80 | 80, (2 << 4) | 0b1000 | 2, 50, 0b000100_00]))
+print("   電球:", b)
+assert b["isOn"] == 1 and b["brightness"] == 80 and b["networkStatus"] == 2
+assert b["isPreset"] == 1 and b["lightState"] == 2 and b["dynamicRate"] == 50
+assert b["rssiQualityBad"] == 0 and b["loopIndex"] == 4
+
+# 消灯かつ明るさ 100%。電源ビットが明るさに混ざらないこと
+off = sc_proto.parse_bulb(MAC6 + bytes([1, 100, 0, 0, 0]))
+assert off["isOn"] == 0 and off["brightness"] == 100
+
+# テープライト: 色データは 2bit x 24。R:G:B=0:0:0 の色は「無し」として除く
+strip = sc_proto.parse_strip(
+    MAC6 + bytes([7, 0x80 | 60, (2 << 4) | 3]) + bytes([0b11_01_00_10, 0, 0, 0, 0, 0]) + bytes([0]))
+print("   テープ:", strip)
+assert strip["mode"] == 3 and strip["brightness"] == 60
+assert strip["colors"] == [(3, 1, 0), (2, 0, 0)], strip["colors"]
+assert strip["faultCode"] == 0
+
+# 全ビット 1 なら 8 色すべてが (3,3,3)
+full = sc_proto.parse_strip(MAC6 + bytes([1, 0, 0]) + b"\xff" * 6 + bytes([0]))
+assert full["colors"] == [(3, 3, 3)] * 8, full["colors"]
+# 全ビット 0 なら色は 1 つも無い
+none = sc_proto.parse_strip(MAC6 + bytes([1, 0, 0]) + b"\x00" * 6 + bytes([0]))
+assert none["colors"] == []
+
+# 長さが足りないものは弾く (テープライトは電球より長いデータが要る)
+assert sc_proto.parse_bulb(MAC6 + bytes([0, 0, 0])) is None
+assert sc_proto.parse_strip(MAC6 + bytes([7, 0, 0, 0, 0])) is None
+print("   機種名:", sc_proto.DEVICE_TYPE_NAMES[0x75], "/", sc_proto.DEVICE_TYPE_NAMES[0x72])
+print("ランプ OK ※実機未検証")
+
+print()
 print("=== バッテリーの注記 ===")
 for b, want_warn in ((0, False), (19, True), (20, True), (21, False), (90, False)):
     note = sc_proto.battery_note(b)
