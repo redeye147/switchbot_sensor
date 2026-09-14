@@ -254,6 +254,41 @@ print("   機種名:", sc_proto.DEVICE_TYPE_NAMES[0x75], "/", sc_proto.DEVICE_TY
 print("ランプ OK ※実機未検証")
 
 print()
+print("=== 電球の制御コマンド (colorbulb.md) ===")
+import switchbot_control as ctl
+
+# 仕様書の Example と 1 バイトも違わないこと
+SPEC_EXAMPLES = [
+    ("Turn On Bulb",              ctl.build_command("on"),                      "570f470101"),
+    ("Turn Off Bulb",             ctl.build_command("off"),                     "570f470102"),
+    ("blue 50% brightness",       ctl.build_command("rgb", level=50, rgb=(0, 0, 255)),
+                                                                                "570f470112320000ff"),
+    ("read status",               ctl.build_command("status"),                  "570f4801"),
+]
+for name, got, want in SPEC_EXAMPLES:
+    print(f"   {name:22} {got.hex()}  (仕様書: {want})")
+    assert got.hex() == want, (name, got.hex(), want)
+
+# 仕様書の Example にある応答を読めること
+on_resp = bytes.fromhex("018032FF00000000FFFF02")
+blue_resp = bytes.fromhex("0180320000FF0000FFFF02")
+off_resp = bytes.fromhex("010032FF00000000FFFF02")
+print()
+print(ctl.describe_response(blue_resp))
+assert "OK" in ctl.describe_response(on_resp)
+assert "点灯" in ctl.describe_response(on_resp)
+assert "消灯" in ctl.describe_response(off_resp)
+assert "RGB       : 0, 0, 255" in ctl.describe_response(blue_resp)
+assert "明るさ    : 50 %" in ctl.describe_response(blue_resp)
+
+# エラーステータスは素直に伝える
+assert "デバイスがビジー" in ctl.describe_response(bytes([0x03]))
+assert "パスワード誤り" in ctl.describe_response(bytes([0x09]))
+assert "応答なし" in ctl.describe_response(b"")
+print()
+print("電球の制御コマンド OK (仕様書の Example と一致)")
+
+print()
 print("=== バッテリーの注記 ===")
 for b, want_warn in ((0, False), (19, True), (20, True), (21, False), (90, False)):
     note = sc_proto.battery_note(b)

@@ -44,6 +44,7 @@ sudo apt install -y python3-venv bluez
 | `switchbot_curtain.py` | カーテン用。bleak 版 |
 | `switchbot_plug.py` | プラグミニ用。複数台を同時監視できる |
 | `switchbot_light.py` | スマート電球 / テープライト用。実機未検証 |
+| `switchbot_control.py` | **電球を BLE 接続して制御する**（唯一の送信側） |
 | `switchbot_contact_bluepy.py` | bluepy 版。旧実装互換。root 権限または setcap が必要 |
 | `systemd/switchbot-contact.service` | 自動起動用 systemd ユニット |
 | `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
@@ -385,6 +386,74 @@ SwitchBot は **全機種が** company ID `0x0969` のメーカー固有デー�
 `[7]` は bit7 が電源、bit[6:0] が明るさです。カーテンの動作ビットやプラグミニの
 過負荷ビットと同じ構造で、そのまま 1 バイトとして読むと**点灯中だけ明るさが
 +128 された値**になります。
+
+## 電球を制御する
+
+ここまでのスクリプトはすべて**受信専用**ですが、`switchbot_control.py` だけは
+**BLE 接続してコマンドを書き込みます**。クラウドもトークンも不要で、ラズパイから
+直接、点灯/消灯・明るさ・色を変えられます。
+
+```bash
+./venv/bin/python switchbot_control.py --mac 80:65:99:9d:ad:de status
+./venv/bin/python switchbot_control.py --mac 80:65:99:9d:ad:de on
+./venv/bin/python switchbot_control.py --mac 80:65:99:9d:ad:de off
+./venv/bin/python switchbot_control.py --mac 80:65:99:9d:ad:de toggle
+./venv/bin/python switchbot_control.py --mac 80:65:99:9d:ad:de level 30
+./venv/bin/python switchbot_control.py --mac 80:65:99:9d:ad:de rgb 0 0 255 --level 50
+./venv/bin/python switchbot_control.py --mac 80:65:99:9d:ad:de cw 2700
+```
+
+`--dry-run` を付けると、接続せずに送信するバイト列だけ表示します。
+
+```bash
+$ ./venv/bin/python switchbot_control.py --mac ... --dry-run on
+送信するパケット: 570f470101
+```
+
+### パケットの形式
+
+**出典:** `devicetypes/colorbulb.md`
+（`0x570F4701` 状態と色の設定 / `0x570F4801` 状態の読み取り）
+
+```
+57 0f 47 01 <サブコマンド> [引数...]
+│  │  └──┴─ コマンド識別
+│  └─ 拡張コマンド
+└─ マジックナンバー
+```
+
+| サブコマンド | 動作 | 引数 |
+|---|---|---|
+| `0x01` / `0x02` / `0x03` | 点灯 / 消灯 / トグル | なし |
+| `0x14` | 明るさ | Lvl (0〜100) |
+| `0x16` | RGB | R, G, B |
+| `0x12` | 明るさ + RGB | Lvl, R, G, B |
+| `0x17` | 色温度 | C/W (2700〜6500K) |
+| `0x13` | 明るさ + 色温度 | Lvl, C/W |
+
+生成したパケットが仕様書の Example と 1 バイトも違わないことを
+`tests/test_offline.py` で固定しています。
+
+### 通信に使う characteristic
+
+| 用途 | UUID |
+|---|---|
+| 書き込み (端末 → デバイス) | `cba20002-224d-11e6-9fb8-0002a5d5c51b` |
+| 通知 (デバイス → 端末) | `cba20003-224d-11e6-9fb8-0002a5d5c51b` |
+
+### 色温度は実機未検証です
+
+色温度 (2700〜6500K) は 1 バイトに収まらず、仕様書の表がバイト位置を明示して
+いません。2 バイトのビッグエンディアンとして送っていますが、**確認が取れて
+いません**。効かない場合は `--dry-run` でバイト列を確認してください。
+
+### 接続できない場合
+
+- BLE 接続は**同時に 1 台**しか受け付けません。アプリが接続中だと失敗します
+- ファームウェアによっては接続に暗号化・認証が必要な場合があります。その場合は
+  応答のステータスが `0x07 デバイスが暗号化されている` になります
+- 応答が返らない場合、コマンド自体は届いている可能性があります。電球の状態を
+  `status` で確認してください
 
 ### ボタン押下の検出
 
