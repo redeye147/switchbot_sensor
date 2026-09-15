@@ -236,11 +236,22 @@ async def learn(rounds=learn_button.ROUNDS,
         return
 
     appeared = learn_button.new_during_press(rows)
+    rates = learn_button.appearance_rates(rec, (b0, b1), windows)
+    noisy_area = learn_button.appearances_look_like_noise(rates)
+
     if appeared:
         print()
-        print("■ 押したときに初めて現れた機器 (普段は電波を出さないボタンの可能性)")
-        for r in appeared:
+        if noisy_area:
+            print("■ 押下中に現れた機器 -- ただし背景ノイズと判断しました")
+            print(f"    待機中も {rates['idle_per_min']:.0f}台/分 のペースで新しい機器が"
+                  f"現れています (押下中は {rates['press_per_min']:.0f}台/分)")
+            print("    周囲に MAC アドレスを定期的に変える機器 (スマホ等) が多いためです")
+        else:
+            print("■ 押したときに初めて現れた機器 (普段は電波を出さないボタンの可能性)")
+        for r in appeared[:8]:
             print(f"    {r['addr']}  {_device_label(r)}")
+        if len(appeared) > 8:
+            print(f"    ... 他 {len(appeared) - 8} 台")
         print()
 
     print(f"{'MAC':20} {_pad('機種', 30)} {'反応':6} {'普段の変化':11} 評価")
@@ -259,7 +270,8 @@ async def learn(rounds=learn_button.ROUNDS,
 
     best = rows[0]
     print()
-    if best["appeared_on_press"] or (
+    credible_appearance = best["appeared_on_press"] and not noisy_area
+    if credible_appearance or (
             best["hits"] == best["rounds"] and best["noise_per_min"] < 1.0):
         print(f"ボタンはおそらく {best['addr']} です。次のように指定してください:")
         print(f"  ./venv/bin/python bath_timer.py --mac {best['addr']}")

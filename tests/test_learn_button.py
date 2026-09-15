@@ -100,4 +100,40 @@ assert found["appeared_on_press"] and "押したときだけ現れた" in lb.ver
 print("押したときだけ現れる機器も検出できる")
 
 print()
+print("=== ADV_IND と SCAN_RSP が別パケットで届いても機種を取り違えない ===")
+rec4 = lb.Recorder()
+# 先にメーカー固有データだけのパケット (機種は分からない)
+rec4.record(CONTACT, None, b"\xaa", 0.0)
+assert rec4.types[CONTACT] is None
+# 後からサービスデータ入りのパケットが届いたら機種を確定させる
+rec4.record(CONTACT, 0x64, b"\xbb", 1.0, name=None)
+print(f"   後から判明した機種: 0x{rec4.types[CONTACT]:02x}")
+assert rec4.types[CONTACT] == 0x64
+# 一度分かった機種を、機種不明のパケットで消さない
+rec4.record(CONTACT, None, b"\xcc", 2.0)
+assert rec4.types[CONTACT] == 0x64
+print("   機種不明のパケットで上書きされない")
+
+print()
+print("=== MAC が変わる機器だらけの環境では「出現」を信用しない ===")
+rec5 = lb.Recorder()
+# 待機中から押下中まで、一定ペースで新しい機器が現れ続ける環境
+for i in range(40):
+    rec5.record(f"aa:bb:cc:dd:{i:02x}:00", None, b"\x01", i * 1.2)
+rates = lb.appearance_rates(rec5, BASELINE, WINDOWS)
+print(f"   待機中 {rates['idle_per_min']:.0f}台/分  押下中 {rates['press_per_min']:.0f}台/分")
+assert lb.appearances_look_like_noise(rates), rates
+print("   背景ノイズと判定される")
+
+# 逆に、待機中は静かで押下中だけ現れるなら本物とみなす
+rec6 = lb.Recorder()
+rec6.record(CONTACT, 0x64, b"\x00", 0.0)
+for w0, _ in WINDOWS:
+    rec6.record(BUTTON, 0x27, b"\x01", w0 + 0.5)
+rates6 = lb.appearance_rates(rec6, BASELINE, WINDOWS)
+print(f"   待機中 {rates6['idle_per_min']:.0f}台/分  押下中 {rates6['press_per_min']:.0f}台/分")
+assert not lb.appearances_look_like_noise(rates6), rates6
+print("   本物の出現として扱われる")
+
+print()
 print("すべて OK")

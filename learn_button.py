@@ -31,10 +31,17 @@ class Recorder:
         self.names = {}                 # addr -> アドバタイズ名
 
     def record(self, addr, dtype, payload, now, name=None):
+        # BLE は ADV_IND と SCAN_RSP が別パケットで届く。機種が分かるのは
+        # サービスデータを含む方だけなので、後から判明したら上書きする。
+        if dtype is not None:
+            self.types[addr] = dtype
+        if name:
+            self.names[addr] = name
+
         if addr not in self.first_seen:
             self.first_seen[addr] = now
-            self.types[addr] = dtype
-            self.names[addr] = name
+            self.types.setdefault(addr, dtype)
+            self.names.setdefault(addr, name)
             self.last[addr] = payload
             return
         if self.last[addr] != payload:
@@ -75,6 +82,38 @@ def analyse(rec, baseline_span, windows):
     # 全ウィンドウで反応し、かつ普段静かなものを上位に
     rows.sort(key=lambda r: (-r["hits"], r["noise_per_min"], r["addr"]))
     return rows
+
+
+def appearance_rates(rec, baseline_span, windows, settle=3.0):
+    """新しい機器が現れる頻度を、待機中と押下中で比べる。
+
+    周囲には MAC アドレスを定期的に変える機器 (スマホ等) が多数あり、押下と
+    無関係に「新しい機器」として現れ続ける。待機中も同じ頻度で現れているなら、
+    押下中の出現もただの背景ノイズである。
+
+    settle: 計測開始直後は既存機器が一斉に初観測されるため、その分を除く秒数。
+    """
+    b0, b1 = baseline_span
+    idle_len = max(b1 - (b0 + settle), 1e-9)
+    idle_new = sum(1 for t in rec.first_seen.values() if b0 + settle <= t < b1)
+
+    press_len = sum(w1 - w0 for w0, w1 in windows) or 1e-9
+    press_new = sum(1 for t in rec.first_seen.values()
+                    if any(w0 <= t <= w1 for w0, w1 in windows))
+
+    return {
+        "idle_per_min": idle_new / idle_len * 60.0,
+        "press_per_min": press_new / press_len * 60.0,
+        "idle_count": idle_new,
+        "press_count": press_new,
+    }
+
+
+def appearances_look_like_noise(rates, factor=2.0):
+    """押下中の出現が、待機中と同程度なら背景ノイズとみなす。"""
+    if rates["idle_per_min"] <= 0:
+        return rates["press_count"] > 3      # 待機中ゼロでも大量なら怪しい
+    return rates["press_per_min"] < rates["idle_per_min"] * factor
 
 
 def new_during_press(rows):
