@@ -33,6 +33,7 @@ _STRIPPED = strip_dist_packages()
 from bleak import BleakScanner  # noqa: E402
 
 import announce  # noqa: E402
+import learn_button  # noqa: E402
 from switchbot_protocol import (  # noqa: E402
     DEVICE_TYPE_CONTACT,
     DEVICE_TYPE_CONTACT_PAIRING,
@@ -111,6 +112,7 @@ class BathTimer:
         self.audio = audio_opts
         self.detect = PressDetector(cooldown)
         self.task = None
+        self.recent = []                # 誤った MAC を指定したときに気付くため
 
     def _handle(self, device, adv):
         if device.address.lower() != self.mac:
@@ -119,7 +121,22 @@ class BathTimer:
             return
         self._schedule()
 
+    def _warn_if_too_frequent(self):
+        """押下が多すぎるときは、カウンタを持つ機器を指定している可能性を伝える。
+
+        開閉センサーや人感センサーは経過秒カウンタを持ち、ボタンと無関係に
+        数秒おきにアドバタイズが変化する。そういう機器を --mac に指定すると
+        タイマーが際限なく再設定され、いつまでも鳴らない。
+        """
+        now = time.monotonic()
+        self.recent = [t for t in self.recent if now - t < 120] + [now]
+        if len(self.recent) == 6:
+            log.warning("2分間に6回も押下を検知しました。--mac の機器が正しいか"
+                        "確認してください (経過秒カウンタを持つ機器の可能性)")
+            log.warning("--learn でボタンを特定し直せます")
+
     def _schedule(self):
+        self._warn_if_too_frequent()
         if self.task and not self.task.done():
             self.task.cancel()
             log.info("押し直されました。タイマーを再設定します")
@@ -151,39 +168,82 @@ class BathTimer:
                 await asyncio.sleep(5)
 
 
-async def learn(mac=None, seconds=60):
-    """押下を特定するための観察モード。変化したデバイスだけを表示する。"""
-    seen = {}
-    target = mac.lower() if mac else None
+async def learn(rounds=learn_button.ROUNDS,
+                baseline=learn_button.BASELINE_SECONDS,
+                window=learn_button.WINDOW_SECONDS,
+                gap=learn_button.GAP_SECONDS):
+    """押した時刻との対応からボタンを特定する。
+
+    「変化したら押下」では特定できない。開閉センサーや人感センサーは経過秒
+    カウンタを持ち、ボタンと無関係に数秒おきに変化し続けるためである。
+    まず押していない時間帯の変化 (ノイズ) を測り、そのうえで指示した数秒間に
+    変化した機器を記録して、両者を突き合わせる。
+    """
+    rec = learn_button.Recorder()
 
     def cb(device, adv):
-        addr = device.address.lower()
-        if target and addr != target:
-            return
         dtype = service_device_type(adv.service_data)
         if dtype is None:
             return                              # SwitchBot 以外は無視
-        payload = payload_of(adv)
-        prev = seen.get(addr)
-        seen[addr] = payload
-        if prev is None:
-            name = DEVICE_TYPE_NAMES.get(dtype, f"不明な機種 0x{dtype:02x}")
-            print(f"{time.strftime('%H:%M:%S')}  {addr}  {name}")
-            print(f"           初回: {payload.hex()}")
-        elif prev != payload:
-            print(f"{time.strftime('%H:%M:%S')}  {addr}  ★変化")
-            print(f"           前回: {prev.hex()}")
-            print(f"           今回: {payload.hex()}")
-            diff = [i for i, (a, b) in enumerate(zip(prev, payload)) if a != b]
-            print(f"           変化したバイト位置: {diff}", flush=True)
+        rec.record(device.address.lower(), dtype, payload_of(adv), time.monotonic())
 
-    print(f"--- {seconds}秒間、SwitchBot 機器を観察します ---")
-    print("この間にボタンを何度か押してください。★変化 が出た機器がそれです。")
+    print("=" * 60)
+    print("ボタンを特定します。画面の指示どおりに押してください。")
+    print("=" * 60)
     print()
+
     async with BleakScanner(cb):
-        await asyncio.sleep(seconds)
+        print(f"[1] まず {baseline:.0f} 秒、何も押さずにお待ちください (ノイズの計測)")
+        b0 = time.monotonic()
+        await asyncio.sleep(baseline)
+        b1 = time.monotonic()
+        print(f"    計測しました。機器 {len(rec.first_seen)}台 を観測中")
+        print()
+
+        windows = []
+        for i in range(rounds):
+            print(f"[{i + 2}] ★ 今すぐボタンを1回押してください ({i + 1}/{rounds})")
+            w0 = time.monotonic()
+            await asyncio.sleep(window)
+            windows.append((w0, time.monotonic()))
+            if i < rounds - 1:
+                print(f"    記録しました。{gap:.0f} 秒お待ちください (押さないでください)")
+                await asyncio.sleep(gap)
+        print("    記録しました。")
+
     print()
-    print(f"--- 終了。観察した機器 {len(seen)}台 ---")
+    print("=" * 60)
+    print("結果")
+    print("=" * 60)
+    rows = learn_button.analyse(rec, (b0, b1), windows)
+    if not rows:
+        print("SwitchBot 機器が見つかりませんでした。")
+        return
+
+    print(f"{'MAC':20} {'機種':30} {'反応':6} {'普段の変化':10} 評価")
+    for r in rows:
+        name = DEVICE_TYPE_NAMES.get(r["type"], f"不明 0x{r['type']:02x}")
+        hits = f"{r['hits']}/{r['rounds']}"
+        noise = f"{r['noise_per_min']:.1f}回/分"
+        print(f"{r['addr']:20} {_pad(name, 30)} {hits:6} {noise:10} {learn_button.verdict(r)}")
+
+    best = rows[0]
+    print()
+    if best["hits"] == best["rounds"] and (best["appeared_on_press"] or best["noise_per_min"] < 1.0):
+        print(f"ボタンはおそらく {best['addr']} です。次のように指定してください:")
+        print(f"  ./venv/bin/python bath_timer.py --mac {best['addr']}")
+    else:
+        print("決め手になる機器がありませんでした。次を確認してください:")
+        print("  - 押すタイミングが指示とずれていないか (★ が出た直後に押す)")
+        print("  - リモートボタンがラズパイの電波の届く範囲にあるか")
+        print("  - --rounds を増やす、--window を長くする")
+
+
+def _pad(text, width):
+    """全角を2桁として数え、表示幅を揃える。"""
+    import unicodedata
+    w = sum(2 if unicodedata.east_asian_width(c) in "FWA" else 1 for c in text)
+    return text + " " * max(0, width - w)
 
 
 def parse_args():
@@ -201,8 +261,11 @@ def parse_args():
     ap.add_argument("--cooldown", type=float, default=3.0,
                     help="1回の押下とみなす秒数 (既定 3)")
     ap.add_argument("--learn", action="store_true",
-                    help="押下を特定するための観察モード")
-    ap.add_argument("--learn-seconds", type=int, default=60, help="観察する秒数")
+                    help="押した時刻との対応からボタンを特定する")
+    ap.add_argument("--rounds", type=int, default=learn_button.ROUNDS,
+                    help="--learn で押してもらう回数 (既定 3)")
+    ap.add_argument("--window", type=float, default=learn_button.WINDOW_SECONDS,
+                    help="--learn で1回の押下を待つ秒数 (既定 4)")
     ap.add_argument("--test-audio", action="store_true",
                     help="待たずにアナウンスを再生して終了する")
     return ap, ap.parse_args()
@@ -224,7 +287,7 @@ async def main():
         return
 
     if args.learn:
-        await learn(args.mac, args.learn_seconds)
+        await learn(rounds=args.rounds, window=args.window)
         return
 
     if not args.mac:
