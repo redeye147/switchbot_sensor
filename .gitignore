@@ -5,3 +5,4 @@ venv/
 *.log
 config.local.*
 .DS_Store
+sounds/

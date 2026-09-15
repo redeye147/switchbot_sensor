@@ -1,0 +1,19 @@
+[Unit]
+Description=SwitchBot bath timer announcement
+After=bluetooth.target sound.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/switchbot_sensor
+# .bashrc は読まれないが、システムの dist-packages が混入しないよう明示する
+Environment=PYTHONPATH=
+ExecStart=/home/pi/switchbot_sensor/venv/bin/python /home/pi/switchbot_sensor/bath_timer.py --mac xx:xx:xx:xx:xx:xx --minutes 15
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

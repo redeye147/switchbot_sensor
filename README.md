@@ -45,6 +45,8 @@ sudo apt install -y python3-venv bluez
 | `switchbot_plug.py` | プラグミニ用。複数台を同時監視できる |
 | `switchbot_light.py` | スマート電球 / テープライト用。実機未検証 |
 | `switchbot_control.py` | **電球を BLE 接続して制御する**（唯一の送信側） |
+| `bath_timer.py` | ボタンを押したら一定時間後に音声でお知らせする |
+| `announce.py` | 音声の生成 (espeak-ng) と再生 (aplay) |
 | `switchbot_contact_bluepy.py` | bluepy 版。旧実装互換。root 権限または setcap が必要 |
 | `systemd/switchbot-contact.service` | 自動起動用 systemd ユニット |
 | `setup.sh` | クリーンな venv を作成。dist-packages の混入を遮断する |
@@ -484,6 +486,89 @@ cw 2700 -> 570f4701170a8c
   応答のステータスが `0x07 デバイスが暗号化されている` になります
 - 応答が返らない場合、コマンド自体は届いている可能性があります。電球の状態を
   `status` で確認してください
+
+## お風呂タイマー
+
+SwitchBot のボタンを押すと、**一定時間後にラズパイのスピーカーから英語で
+お知らせ**します。お湯を張り始めるときに押しておく、という使い方です。
+
+```
+ボタン押下 --> (既定 15分) --> "The bath water is full."
+```
+
+### 準備
+
+```bash
+sudo apt install -y espeak-ng alsa-utils
+```
+
+音が出るか先に確認してください。待たずにその場で再生します。
+
+```bash
+./venv/bin/python bath_timer.py --test-audio
+```
+
+鳴らない場合は出力先を指定します。`aplay -l` で一覧が出ます。
+
+```bash
+aplay -l
+./venv/bin/python bath_timer.py --test-audio --device plughw:1,0
+```
+
+### ボタンを特定する
+
+**SwitchBot のリモートボタンは公式 BLE 仕様書に記載がありません。** そのため
+押下の検知方法を実測で決める必要があります。観察モードを使ってください。
+
+```bash
+./venv/bin/python bath_timer.py --learn
+```
+
+60秒のあいだ周囲の SwitchBot 機器を監視し、**アドバタイズが変化した機器**を
+表示します。この間にボタンを何度か押すと、その機器に `★変化` が出ます。
+
+```
+03:12:05  e1:02:b9:ac:98:d5  不明な機種 0x62
+           初回: 6200643412
+03:12:09  e1:02:b9:ac:98:d5  ★変化
+           前回: 6200643412
+           今回: 6200643413
+           変化したバイト位置: [4]
+```
+
+この MAC を `--mac` に指定します。
+
+### 運用
+
+```bash
+./venv/bin/python bath_timer.py --mac e1:02:b9:ac:98:d5
+```
+
+| オプション | 既定 | 意味 |
+|---|---|---|
+| `--minutes` | 15 | 押されてから知らせるまでの分数 |
+| `--message` | `The bath water is full.` | 読み上げる文面 |
+| `--repeat` | 2 | 読み上げ回数 |
+| `--voice` | `en` | espeak-ng の音声 (`ja` で日本語) |
+| `--speed` | 150 | 読み上げ速度 |
+| `--device` | — | `aplay` の出力先 |
+| `--cooldown` | 3 | 1回の押下とみなす秒数 |
+
+**押し直すとタイマーは再設定されます。** お湯張りをやり直したときはもう一度
+押してください。
+
+自動起動は `systemd/bath-timer.service` を使います (`--mac` を書き換えてから
+配置してください)。
+
+### 押下の検知方法
+
+| 機種 | 判定 |
+|---|---|
+| 開閉センサー | 押下カウンタ (1〜15循環) の変化。**ドアの開閉では反応しません** |
+| それ以外 | アドバタイズの中身が変化したこと |
+
+どちらの場合も、1回の押下で複数のパケットが飛ぶため `--cooldown` 秒のあいだの
+重複は無視します。
 
 ### ボタン押下の検出
 
