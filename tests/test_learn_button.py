@@ -72,6 +72,24 @@ plug = next(r for r in result if r["addr"] == PLUG)
 assert plug["hits"] == 0 and lb.verdict(plug) == "反応なし"
 print("無反応の機器は「反応なし」")
 
+# MAC が毎回変わるボタン: 押すたびに別の機器として出現する
+rec3 = lb.Recorder()
+rec3.record(CONTACT, 0x64, b"\x00", 0.0)
+for i, (w0, _) in enumerate(WINDOWS):
+    rec3.record(f"7a:bb:cc:dd:ee:{i:02x}", None, b"\x01", w0 + 0.5, name="Remote")
+r3 = lb.analyse(rec3, BASELINE, WINDOWS)
+fresh = lb.new_during_press(r3)
+print()
+print("MAC が毎回変わる場合:")
+for r in fresh:
+    print(f"   {r['addr']}  name={r['name']}  {lb.verdict(r)}")
+assert len(fresh) == 3, fresh
+assert all(r["name"] == "Remote" for r in fresh)
+print("押すたびに別 MAC で現れても、3件すべて拾える")
+
+# SwitchBot 以外の機器も記録対象 (機種バイトは None)
+assert all(r["type"] is None for r in fresh)
+
 # 押したときだけ電波を出すボタン (普段は圏外) も拾えること
 rec2 = lb.Recorder()
 rec2.record(CONTACT, 0x64, b"\x00", 0.0)

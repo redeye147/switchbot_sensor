@@ -168,6 +168,19 @@ class BathTimer:
                 await asyncio.sleep(5)
 
 
+def _any_payload(adv):
+    """SwitchBot 形式でない機器でも変化を追えるよう、全データを連結する。"""
+    parts = [p for _, p in sorted(adv.service_data.items())]
+    parts += [p for _, p in sorted(adv.manufacturer_data.items())]
+    return b"".join(parts)
+
+
+def _device_label(row):
+    if row["type"] is not None:
+        return DEVICE_TYPE_NAMES.get(row["type"], f"不明 0x{row['type']:02x}")
+    return row["name"] or "非 SwitchBot 機器"
+
+
 async def learn(rounds=learn_button.ROUNDS,
                 baseline=learn_button.BASELINE_SECONDS,
                 window=learn_button.WINDOW_SECONDS,
@@ -182,10 +195,12 @@ async def learn(rounds=learn_button.ROUNDS,
     rec = learn_button.Recorder()
 
     def cb(device, adv):
+        # SwitchBot 以外も記録する。リモートは SwitchBot 形式のサービスデータを
+        # 出さない可能性があり、機種で絞ると取り逃がす。
         dtype = service_device_type(adv.service_data)
-        if dtype is None:
-            return                              # SwitchBot 以外は無視
-        rec.record(device.address.lower(), dtype, payload_of(adv), time.monotonic())
+        payload = payload_of(adv) or _any_payload(adv)
+        rec.record(device.address.lower(), dtype, payload, time.monotonic(),
+                   name=adv.local_name)
 
     print("=" * 60)
     print("ボタンを特定します。画面の指示どおりに押してください。")
@@ -217,26 +232,52 @@ async def learn(rounds=learn_button.ROUNDS,
     print("=" * 60)
     rows = learn_button.analyse(rec, (b0, b1), windows)
     if not rows:
-        print("SwitchBot 機器が見つかりませんでした。")
+        print("BLE 機器が見つかりませんでした。Bluetooth が有効か確認してください。")
         return
 
-    print(f"{'MAC':20} {'機種':30} {'反応':6} {'普段の変化':10} 評価")
+    appeared = learn_button.new_during_press(rows)
+    if appeared:
+        print()
+        print("■ 押したときに初めて現れた機器 (普段は電波を出さないボタンの可能性)")
+        for r in appeared:
+            print(f"    {r['addr']}  {_device_label(r)}")
+        print()
+
+    print(f"{'MAC':20} {_pad('機種', 30)} {'反応':6} {'普段の変化':11} 評価")
+    shown = 0
     for r in rows:
-        name = DEVICE_TYPE_NAMES.get(r["type"], f"不明 0x{r['type']:02x}")
+        # 反応ゼロかつ静かな機器が大量にあるので、先頭だけ出す
+        if r["hits"] == 0 and not r["appeared_on_press"] and shown >= 12:
+            continue
+        shown += 1
         hits = f"{r['hits']}/{r['rounds']}"
         noise = f"{r['noise_per_min']:.1f}回/分"
-        print(f"{r['addr']:20} {_pad(name, 30)} {hits:6} {noise:10} {learn_button.verdict(r)}")
+        print(f"{r['addr']:20} {_pad(_device_label(r), 30)} {hits:6} {noise:11} "
+              f"{learn_button.verdict(r)}")
+    if len(rows) > shown:
+        print(f"... 他 {len(rows) - shown} 台 (反応なし)")
 
     best = rows[0]
     print()
-    if best["hits"] == best["rounds"] and (best["appeared_on_press"] or best["noise_per_min"] < 1.0):
+    if best["appeared_on_press"] or (
+            best["hits"] == best["rounds"] and best["noise_per_min"] < 1.0):
         print(f"ボタンはおそらく {best['addr']} です。次のように指定してください:")
         print(f"  ./venv/bin/python bath_timer.py --mac {best['addr']}")
     else:
-        print("決め手になる機器がありませんでした。次を確認してください:")
+        print("決め手になる機器がありませんでした。")
+        print()
+        print("SwitchBot のリモートボタンは、ペアリング済みの Bot やカーテンに")
+        print("直接コマンドを送る設計で、周囲に状態を広告しない可能性があります。")
+        print("その場合、押下を BLE の受信だけで捉えることはできません。")
+        print()
+        print("確認してください:")
         print("  - 押すタイミングが指示とずれていないか (★ が出た直後に押す)")
-        print("  - リモートボタンがラズパイの電波の届く範囲にあるか")
+        print("  - リモートがラズパイの電波の届く範囲にあるか")
         print("  - --rounds を増やす、--window を長くする")
+        print()
+        print("代わりの方法として、開閉センサー本体のボタンが使えます。")
+        print("押下が仕様どおり検知でき、実機で確認済みです:")
+        print("  ./venv/bin/python bath_timer.py --mac c4:88:9c:aa:ab:2f")
 
 
 def _pad(text, width):

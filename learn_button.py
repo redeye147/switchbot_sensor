@@ -27,12 +27,14 @@ class Recorder:
         self.last = {}                  # addr -> payload
         self.changes = []               # (時刻, addr) 変化した瞬間
         self.first_seen = {}            # addr -> 時刻
-        self.types = {}                 # addr -> 機種バイト
+        self.types = {}                 # addr -> 機種バイト (SwitchBot 以外は None)
+        self.names = {}                 # addr -> アドバタイズ名
 
-    def record(self, addr, dtype, payload, now):
+    def record(self, addr, dtype, payload, now, name=None):
         if addr not in self.first_seen:
             self.first_seen[addr] = now
             self.types[addr] = dtype
+            self.names[addr] = name
             self.last[addr] = payload
             return
         if self.last[addr] != payload:
@@ -63,6 +65,7 @@ def analyse(rec, baseline_span, windows):
         rows.append({
             "addr": addr,
             "type": rec.types[addr],
+            "name": rec.names.get(addr),
             "hits": hits,
             "rounds": len(windows),
             "noise_per_min": noise / baseline_len * 60.0,
@@ -72,6 +75,16 @@ def analyse(rec, baseline_span, windows):
     # 全ウィンドウで反応し、かつ普段静かなものを上位に
     rows.sort(key=lambda r: (-r["hits"], r["noise_per_min"], r["addr"]))
     return rows
+
+
+def new_during_press(rows):
+    """押下ウィンドウ中に初めて現れた機器だけを返す。
+
+    リモートは押されたときだけ電波を出すことがあり、その場合「変化」ではなく
+    「出現」として現れる。MAC アドレスが毎回変わる機器も、押すたびに別の機器
+    として出現するのでここに並ぶ。
+    """
+    return [r for r in rows if r["appeared_on_press"]]
 
 
 def verdict(row):
