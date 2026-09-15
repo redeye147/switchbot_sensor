@@ -619,8 +619,42 @@ c4:88:9c:aa:ab:2f    開閉センサー (Contact Sensor)   3/3    15.0回/分   
 **押し直すとタイマーは再設定されます。** お湯張りをやり直したときはもう一度
 押してください。
 
-自動起動は `systemd/bath-timer.service` を使います (`--mac` を書き換えてから
-配置してください)。
+自動起動は `systemd/bath-timer.service` を使います。
+
+```bash
+sudo cp systemd/bath-timer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bath-timer
+journalctl -u bath-timer -f
+```
+
+#### 再起動直後に反応しなくなる問題への対策
+
+`After=bluetooth.target` は「Bluetooth の初期化を始めた」程度の保証しかなく、
+**起動直後はアダプタがまだ使えないことがあります**。その状態でスキャンを始めると
+**例外も出ないまま何も受信しません**。実測でも、早朝の再起動後にボタンが効かなく
+なる現象が起きました。
+
+対策を2段構えにしてあります。
+
+1. `ExecStartPre` で `wait_for_bluetooth.sh` を実行し、アダプタが使えるように
+   なるまで最大60秒待つ
+2. サービス側で**受信の途絶を監視**し、60秒間どの機器からも受信がなければ
+   スキャナを作り直す
+
+```
+WARNING 120秒間まったく受信がありません。スキャナを作り直します
+```
+
+対象のセンサーだけ受信できない場合 (電池切れ・距離) は、スキャナの問題では
+ないので作り直さず警告のみ出します。
+
+```
+WARNING c4:88:9c:aa:ab:2f から 20分間 受信していません。電池と距離を確認してください
+```
+
+センサーを最初に受信したときと、受信が回復したときにもログを残すので、
+`journalctl -u bath-timer` で状況を追えます。
 
 ### 押下の検知方法
 

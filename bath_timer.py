@@ -116,10 +116,25 @@ class BathTimer:
         self.detect = PressDetector(cooldown)
         self.task = None
         self.recent = []                # 誤った MAC を指定したときに気付くため
+        # 受信の途絶を見張るための時刻。BlueZ はスキャンを黙って止めることが
+        # あり、起動直後はアダプタがまだ使えないこともある。例外が出ないので
+        # 監視しないと「動いているつもりで何も受信していない」状態が続く。
+        self.last_any = time.monotonic()
+        self.last_target = None
+        self.target_lost_warned = False
 
     def _handle(self, device, adv):
+        self.last_any = time.monotonic()
         if device.address.lower() != self.mac:
             return
+
+        if self.last_target is None:
+            log.info("センサーを受信しました (%s)", self.mac)
+        elif self.target_lost_warned:
+            log.info("センサーの受信が回復しました (%s)", self.mac)
+        self.last_target = self.last_any
+        self.target_lost_warned = False
+
         if not self.detect(adv):
             return
         self._schedule()
@@ -163,30 +178,54 @@ class BathTimer:
         except announce.AudioError as e:
             log.error("アナウンスできませんでした: %s", e)
 
+    async def _watchdog(self, restart, stall=60.0, target_stall=600.0, interval=15.0):
+        """受信が途絶えたらスキャナを作り直す。
+
+        stall:        どの機器からも受信がない秒数。これを超えたらスキャナが
+                      死んでいるとみなして作り直す。
+        target_stall: 対象のセンサーだけ受信がない秒数。こちらはスキャナの
+                      問題ではないので、作り直さず警告にとどめる。
+        """
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+
+            if now - self.last_any > stall:
+                log.warning("%.0f秒間まったく受信がありません。スキャナを作り直します",
+                            now - self.last_any)
+                restart.set()
+                return
+
+            if self.last_target is None:
+                if now - self.last_any > target_stall and not self.target_lost_warned:
+                    log.warning("他の機器は受信できていますが、%s からは一度も"
+                                "受信していません。MAC と電波の届く範囲を確認してください",
+                                self.mac)
+                    self.target_lost_warned = True
+            elif now - self.last_target > target_stall and not self.target_lost_warned:
+                log.warning("%s から %.0f分間 受信していません。電池と距離を"
+                            "確認してください", self.mac, (now - self.last_target) / 60)
+                self.target_lost_warned = True
+
     async def run(self):
         log.info("%s のボタンを待っています (Ctrl-C で終了)", self.mac)
         while True:
+            restart = asyncio.Event()
+            watchdog = None
             try:
+                self.last_any = time.monotonic()    # 起動直後の誤検知を避ける
                 async with BleakScanner(self._handle):
-                    await asyncio.Future()      # 押されるまで待ち続ける
+                    watchdog = asyncio.create_task(self._watchdog(restart))
+                    await restart.wait()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 log.warning("BLE スキャンが停止しました (%s) -- 5秒後に再開します", e)
                 await asyncio.sleep(5)
-
-
-def _any_payload(adv):
-    """SwitchBot 形式でない機器でも変化を追えるよう、全データを連結する。"""
-    parts = [p for _, p in sorted(adv.service_data.items())]
-    parts += [p for _, p in sorted(adv.manufacturer_data.items())]
-    return b"".join(parts)
-
-
-def _device_label(row):
-    if row["type"] is not None:
-        return DEVICE_TYPE_NAMES.get(row["type"], f"不明 0x{row['type']:02x}")
-    return row["name"] or "非 SwitchBot 機器"
+            finally:
+                if watchdog:
+                    watchdog.cancel()
+            await asyncio.sleep(1)
 
 
 async def learn(rounds=learn_button.ROUNDS,

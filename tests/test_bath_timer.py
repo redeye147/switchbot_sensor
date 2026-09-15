@@ -125,6 +125,56 @@ async def main():
 asyncio.run(main())
 
 print()
+print("=== 受信が途絶えたらスキャナを作り直す ===")
+
+
+async def watchdog_checks():
+    import logging
+    logging.basicConfig(level=logging.WARNING, format="   %(levelname)s %(message)s")
+
+    # どの機器からも受信がない -> 作り直しを要求する
+    t = bt.BathTimer("aa:bb:cc:dd:ee:ff", 15, {}, cooldown=0)
+    restart = asyncio.Event()
+    t.last_any = time.monotonic() - 120          # 2分間 無受信
+    wd = asyncio.create_task(t._watchdog(restart, stall=60, interval=0.05))
+    await asyncio.sleep(0.2)
+    print(f"   作り直しを要求: {restart.is_set()}")
+    assert restart.is_set()
+    wd.cancel()
+
+    # 受信が続いていれば作り直さない
+    t2 = bt.BathTimer("aa:bb:cc:dd:ee:ff", 15, {}, cooldown=0)
+    restart2 = asyncio.Event()
+    wd2 = asyncio.create_task(t2._watchdog(restart2, stall=60, interval=0.05))
+    for _ in range(4):
+        await asyncio.sleep(0.05)
+        t2._handle(Dev("99:99:99:99:99:99"), unknown(1))   # 別機器でも受信は受信
+    assert not restart2.is_set()
+    print("   他の機器から受信できていれば作り直さない")
+    wd2.cancel()
+
+    # 対象だけ受信がない -> 作り直さず警告のみ
+    t3 = bt.BathTimer("aa:bb:cc:dd:ee:ff", 15, {}, cooldown=0)
+    restart3 = asyncio.Event()
+    t3.last_any = time.monotonic()
+    t3.last_target = time.monotonic() - 1200     # 20分 対象から受信なし
+    wd3 = asyncio.create_task(
+        t3._watchdog(restart3, stall=60, target_stall=600, interval=0.05))
+    await asyncio.sleep(0.2)
+    assert not restart3.is_set(), "対象だけの不通でスキャナを作り直してはいけない"
+    assert t3.target_lost_warned
+    print("   対象だけ不通なら警告のみ (スキャナは作り直さない)")
+    wd3.cancel()
+
+    # 受信が戻ったら回復を記録する
+    t3._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(1))
+    assert not t3.target_lost_warned
+    print("   受信が回復したら警告状態を解除する")
+
+
+asyncio.run(watchdog_checks())
+
+print()
 print("=== 文面ごとに WAV を使い分ける ===")
 import announce
 a = announce.wav_path("The bath water is full.", "en", 150)

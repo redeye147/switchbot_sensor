@@ -1,7 +1,9 @@
 [Unit]
 Description=SwitchBot bath timer announcement
-After=bluetooth.target sound.target
-Wants=bluetooth.target
+# bluetooth.target だけでは、起動直後にアダプタがまだ使えないことがある。
+# 実際に使えるようになるまでは ExecStartPre で待つ。
+After=bluetooth.target bluetooth.service sound.target network-online.target
+Wants=bluetooth.service
 
 [Service]
 Type=simple
@@ -9,6 +11,7 @@ User=pi
 WorkingDirectory=/home/pi/switchbot_sensor
 # .bashrc は読まれないが、システムの dist-packages が混入しないよう明示する
 Environment=PYTHONPATH=
+ExecStartPre=/home/pi/switchbot_sensor/wait_for_bluetooth.sh 60
 ExecStart=/home/pi/switchbot_sensor/venv/bin/python /home/pi/switchbot_sensor/bath_timer.py --mac c4:88:9c:aa:ab:2f --minutes 15
 Restart=always
 RestartSec=5
