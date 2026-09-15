@@ -46,6 +46,7 @@ from switchbot_protocol import (  # noqa: E402
 log = logging.getLogger("switchbot")
 
 DEFAULT_MESSAGE = "The bath water is full."
+DEFAULT_ACK = "Timer started."
 CONTACT_TYPES = {DEVICE_TYPE_CONTACT, DEVICE_TYPE_CONTACT_PAIRING}
 
 
@@ -106,10 +107,12 @@ class PressDetector:
 class BathTimer:
     """ボタン押下を待ち、一定時間後にアナウンスする。"""
 
-    def __init__(self, mac, minutes, audio_opts, cooldown=3.0):
+    def __init__(self, mac, minutes, audio_opts, cooldown=3.0, ack_opts=None):
         self.mac = mac.lower()
         self.delay = minutes * 60
         self.audio = audio_opts
+        # 押したその場で鳴らす確認音。15分後まで成否が分からないのを避ける。
+        self.ack = ack_opts
         self.detect = PressDetector(cooldown)
         self.task = None
         self.recent = []                # 誤った MAC を指定したときに気付くため
@@ -146,6 +149,11 @@ class BathTimer:
         due = time.strftime("%H:%M", time.localtime(time.time() + self.delay))
         log.info("ボタンが押されました。%d分後 (%s頃) にお知らせします",
                  self.delay // 60, due)
+        if self.ack:
+            try:
+                await asyncio.to_thread(announce.play, **self.ack)
+            except announce.AudioError as e:
+                log.error("確認音を鳴らせませんでした: %s", e)
         try:
             await asyncio.sleep(self.delay)
         except asyncio.CancelledError:
@@ -310,6 +318,9 @@ def parse_args():
     ap.add_argument("--voice", default="en", help="espeak-ng の音声 (既定 en)")
     ap.add_argument("--speed", type=int, default=150, help="読み上げ速度 (既定 150)")
     ap.add_argument("--repeat", type=int, default=2, help="読み上げ回数 (既定 2)")
+    ap.add_argument("--ack-message", default=DEFAULT_ACK,
+                    help=f"押したときに鳴らす確認の文面 (既定: {DEFAULT_ACK!r})")
+    ap.add_argument("--no-ack", action="store_true", help="押したときの確認音を鳴らさない")
     ap.add_argument("--device", help="aplay の出力先 (例 plughw:1,0)")
     ap.add_argument("--cooldown", type=float, default=3.0,
                     help="1回の押下とみなす秒数 (既定 3)")
@@ -330,6 +341,9 @@ async def main():
 
     audio_opts = dict(message=args.message, voice=args.voice, speed=args.speed,
                       repeat=args.repeat, device=args.device)
+    ack_opts = None if args.no_ack else dict(
+        message=args.ack_message, voice=args.voice, speed=args.speed,
+        repeat=1, device=args.device)
 
     if args.test_audio:
         try:
@@ -353,11 +367,14 @@ async def main():
     # 音声を先に用意しておく。15分待ってから失敗するのを避ける。
     try:
         announce.build_wav(args.message, args.voice, args.speed)
+        if ack_opts:
+            announce.build_wav(args.ack_message, args.voice, args.speed)
     except announce.AudioError as e:
         log.error("%s", e)
         raise SystemExit(1)
 
-    await BathTimer(args.mac, args.minutes, audio_opts, args.cooldown).run()
+    await BathTimer(args.mac, args.minutes, audio_opts, args.cooldown,
+                    ack_opts=ack_opts).run()
 
 
 if __name__ == "__main__":

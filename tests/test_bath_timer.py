@@ -90,6 +90,32 @@ async def main():
     print(f"   アナウンス回数: {len(played)} (1回のはず)")
     assert len(played) == 1
 
+    # 押した瞬間に確認音、時間後に本編。順番と回数を確かめる。
+    spoken = []
+    announce.play = lambda **kw: spoken.append(kw["message"])
+    t3 = bt.BathTimer("aa:bb:cc:dd:ee:ff", minutes=0.02, cooldown=0,
+                      audio_opts={"message": "full"}, ack_opts={"message": "ack"})
+    t3._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(1))
+    t3._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(2))
+    await asyncio.sleep(0.1)
+    print(f"   押した直後: {spoken}")
+    assert spoken == ["ack"], spoken
+    await asyncio.sleep(1.5)
+    print(f"   待ち時間後: {spoken}")
+    assert spoken == ["ack", "full"], spoken
+
+    # --no-ack 相当なら確認音は鳴らない
+    spoken.clear()
+    t4 = bt.BathTimer("aa:bb:cc:dd:ee:ff", minutes=0.02, cooldown=0,
+                      audio_opts={"message": "full"}, ack_opts=None)
+    t4._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(1))
+    t4._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(2))
+    await asyncio.sleep(0.1)
+    assert spoken == [], spoken
+    await asyncio.sleep(1.5)
+    assert spoken == ["full"], spoken
+    print("   --no-ack では確認音なし")
+
     # 別デバイスは無視する
     t2 = bt.BathTimer("aa:bb:cc:dd:ee:ff", 1, {}, cooldown=0)
     t2._handle(Dev("11:22:33:44:55:66"), unknown(9))
