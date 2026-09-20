@@ -13,8 +13,11 @@ WorkingDirectory=/home/pi/switchbot_sensor
 Environment=PYTHONPATH=
 ExecStartPre=/home/pi/switchbot_sensor/wait_for_bluetooth.sh 60
 ExecStart=/home/pi/switchbot_sensor/venv/bin/python /home/pi/switchbot_sensor/bath_timer.py --mac c4:88:9c:aa:ab:2f --minutes 15
+# 復旧できないときはプロセス側から終了する。必ず作り直すこと。
 Restart=always
-RestartSec=5
+RestartSec=10
+# 再起動を繰り返しても打ち切られないようにする
+StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 

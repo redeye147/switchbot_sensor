@@ -22,6 +22,7 @@ SwitchBot のリモートボタンは公式 BLE 仕様書に記載がないた�
 """
 import argparse
 import asyncio
+import contextlib
 import logging
 import time
 
@@ -47,6 +48,13 @@ log = logging.getLogger("switchbot")
 
 DEFAULT_MESSAGE = "The bath water is full."
 DEFAULT_ACK = "Timer started."
+
+# BlueZ が応答しなくなったときに待ち続けないための上限 (秒)
+SCAN_START_TIMEOUT = 30.0
+SCAN_STOP_TIMEOUT = 10.0
+# これだけ続けて復旧できなければプロセスを終える (systemd が作り直す)
+MAX_SCAN_FAILURES = 3
+RETRY_DELAY = 5.0
 CONTACT_TYPES = {DEVICE_TYPE_CONTACT, DEVICE_TYPE_CONTACT_PAIRING}
 
 
@@ -122,9 +130,11 @@ class BathTimer:
         self.last_any = time.monotonic()
         self.last_target = None
         self.target_lost_warned = False
+        self.packets = 0                # 復旧できたかの判定に使う
 
     def _handle(self, device, adv):
         self.last_any = time.monotonic()
+        self.packets += 1
         if device.address.lower() != self.mac:
             return
 
@@ -208,24 +218,57 @@ class BathTimer:
                 self.target_lost_warned = True
 
     async def run(self):
+        """スキャンを続ける。止まったら作り直し、直らなければプロセスを終える。
+
+        BlueZ は応答しなくなることがある。停止処理が "No discovery started" で
+        失敗し、続く開始処理が例外も出さずに固まる、という壊れ方を実際にした。
+        待ち続けると無言で死ぬので、開始も停止もタイムアウトを設ける。
+
+        作り直しても受信が戻らない場合は、プロセスを終えて systemd に任せる。
+        新しいプロセスなら D-Bus の接続ごと作り直せる。
+        """
         log.info("%s のボタンを待っています (Ctrl-C で終了)", self.mac)
+        failures = 0
+
         while True:
             restart = asyncio.Event()
             watchdog = None
+            scanner = BleakScanner(self._handle)
+            before = self.packets
+
             try:
                 self.last_any = time.monotonic()    # 起動直後の誤検知を避ける
-                async with BleakScanner(self._handle):
-                    watchdog = asyncio.create_task(self._watchdog(restart))
-                    await restart.wait()
+                await asyncio.wait_for(scanner.start(), SCAN_START_TIMEOUT)
+                watchdog = asyncio.create_task(self._watchdog(restart))
+                await restart.wait()
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                log.warning("スキャンの開始が %.0f秒以内に終わりませんでした",
+                            SCAN_START_TIMEOUT)
             except Exception as e:
-                log.warning("BLE スキャンが停止しました (%s) -- 5秒後に再開します", e)
-                await asyncio.sleep(5)
+                log.warning("BLE スキャンが停止しました (%s)", e)
             finally:
                 if watchdog:
                     watchdog.cancel()
-            await asyncio.sleep(1)
+                # 停止は失敗してもよい。既に止まっていることがある。
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(scanner.stop(), SCAN_STOP_TIMEOUT)
+
+            if self.packets > before:
+                failures = 0            # 受信できていたので復旧は成功とみなす
+            else:
+                failures += 1
+                log.warning("作り直しても受信できませんでした (%d回目 / %d回まで)",
+                            failures, MAX_SCAN_FAILURES)
+
+            if failures >= MAX_SCAN_FAILURES:
+                log.error("BLE スキャンを復旧できません。プロセスを終了します "
+                          "(systemd が作り直します)")
+                raise SystemExit(1)
+
+            log.info("%.0f秒後にスキャンを作り直します", RETRY_DELAY)
+            await asyncio.sleep(RETRY_DELAY)
 
 
 async def learn(rounds=learn_button.ROUNDS,
