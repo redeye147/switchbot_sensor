@@ -48,6 +48,9 @@ log = logging.getLogger("switchbot")
 
 DEFAULT_MESSAGE = "The bath water is full."
 DEFAULT_ACK = "Timer started."
+# 押してから確認音を鳴らすまでの秒数。押した直後だと、まだ風呂場にいて
+# 部屋のスピーカーが聞こえないことがあるため少し置く。
+DEFAULT_ACK_DELAY = 10.0
 
 # BlueZ が応答しなくなったときに待ち続けないための上限 (秒)
 SCAN_START_TIMEOUT = 30.0
@@ -115,12 +118,14 @@ class PressDetector:
 class BathTimer:
     """ボタン押下を待ち、一定時間後にアナウンスする。"""
 
-    def __init__(self, mac, minutes, audio_opts, cooldown=3.0, ack_opts=None):
+    def __init__(self, mac, minutes, audio_opts, cooldown=3.0, ack_opts=None,
+                 ack_delay=DEFAULT_ACK_DELAY):
         self.mac = mac.lower()
         self.delay = minutes * 60
         self.audio = audio_opts
-        # 押したその場で鳴らす確認音。15分後まで成否が分からないのを避ける。
+        # 押したことを知らせる確認音。15分後まで成否が分からないのを避ける。
         self.ack = ack_opts
+        self.ack_delay = max(0.0, min(ack_delay, self.delay))
         self.detect = PressDetector(cooldown)
         self.task = None
         self.recent = []                # 誤った MAC を指定したときに気付くため
@@ -174,13 +179,15 @@ class BathTimer:
         due = time.strftime("%H:%M", time.localtime(time.time() + self.delay))
         log.info("ボタンが押されました。%d分後 (%s頃) にお知らせします",
                  self.delay // 60, due)
-        if self.ack:
-            try:
-                await asyncio.to_thread(announce.play, **self.ack)
-            except announce.AudioError as e:
-                log.error("確認音を鳴らせませんでした: %s", e)
         try:
-            await asyncio.sleep(self.delay)
+            if self.ack:
+                await asyncio.sleep(self.ack_delay)
+                try:
+                    await asyncio.to_thread(announce.play, **self.ack)
+                except announce.AudioError as e:
+                    log.error("確認音を鳴らせませんでした: %s", e)
+            # 押してから本編までが指定時間になるよう、確認音の分を差し引く
+            await asyncio.sleep(self.delay - (self.ack_delay if self.ack else 0.0))
         except asyncio.CancelledError:
             return
         try:
@@ -403,6 +410,8 @@ def parse_args():
     ap.add_argument("--ack-message", default=DEFAULT_ACK,
                     help=f"押したときに鳴らす確認の文面 (既定: {DEFAULT_ACK!r})")
     ap.add_argument("--no-ack", action="store_true", help="押したときの確認音を鳴らさない")
+    ap.add_argument("--ack-delay", type=float, default=DEFAULT_ACK_DELAY,
+                    help=f"押してから確認音を鳴らすまでの秒数 (既定 {DEFAULT_ACK_DELAY:.0f})")
     ap.add_argument("--device", help="aplay の出力先 (例 plughw:1,0)")
     ap.add_argument("--cooldown", type=float, default=3.0,
                     help="1回の押下とみなす秒数 (既定 3)")
@@ -456,7 +465,7 @@ async def main():
         raise SystemExit(1)
 
     await BathTimer(args.mac, args.minutes, audio_opts, args.cooldown,
-                    ack_opts=ack_opts).run()
+                    ack_opts=ack_opts, ack_delay=args.ack_delay).run()
 
 
 if __name__ == "__main__":

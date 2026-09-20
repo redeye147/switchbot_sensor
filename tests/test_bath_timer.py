@@ -90,30 +90,62 @@ async def main():
     print(f"   アナウンス回数: {len(played)} (1回のはず)")
     assert len(played) == 1
 
-    # 押した瞬間に確認音、時間後に本編。順番と回数を確かめる。
+    # 確認音は押してすぐではなく ack_delay 秒後。本編は押してから所定の時間後。
     spoken = []
-    announce.play = lambda **kw: spoken.append(kw["message"])
-    t3 = bt.BathTimer("aa:bb:cc:dd:ee:ff", minutes=0.02, cooldown=0,
-                      audio_opts={"message": "full"}, ack_opts={"message": "ack"})
+    announce.play = lambda **kw: spoken.append((round(time.monotonic() - t0, 1), kw["message"]))
+    t3 = bt.BathTimer("aa:bb:cc:dd:ee:ff", minutes=1.0 / 60, cooldown=0,   # 本編は 1.0秒後
+                      audio_opts={"message": "full"}, ack_opts={"message": "ack"},
+                      ack_delay=0.4)
+    t0 = time.monotonic()
     t3._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(1))
     t3._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(2))
-    await asyncio.sleep(0.1)
-    print(f"   押した直後: {spoken}")
-    assert spoken == ["ack"], spoken
-    await asyncio.sleep(1.5)
-    print(f"   待ち時間後: {spoken}")
-    assert spoken == ["ack", "full"], spoken
+    await asyncio.sleep(0.2)
+    print(f"   0.2秒時点: {spoken} (まだ鳴らない)")
+    assert spoken == [], spoken
+    await asyncio.sleep(0.4)
+    print(f"   0.6秒時点: {spoken}")
+    assert [m for _, m in spoken] == ["ack"], spoken
+    await asyncio.sleep(0.8)
+    print(f"   1.4秒時点: {spoken}")
+    assert [m for _, m in spoken] == ["ack", "full"], spoken
+    # 本編は確認音の遅延を差し引いた時刻に鳴る (押下から 1.0秒後のまま)
+    full_at = [t for t, m in spoken if m == "full"][0]
+    print(f"   本編は押下から {full_at}秒後 (1.0秒の想定)")
+    assert 0.9 <= full_at <= 1.3, full_at
 
-    # --no-ack 相当なら確認音は鳴らない
+    # 確認音が鳴る前に押し直したら、確認音ごと取り消される
     spoken.clear()
-    t4 = bt.BathTimer("aa:bb:cc:dd:ee:ff", minutes=0.02, cooldown=0,
-                      audio_opts={"message": "full"}, ack_opts=None)
+    t0 = time.monotonic()
+    t5 = bt.BathTimer("aa:bb:cc:dd:ee:ff", minutes=1.0 / 60, cooldown=0,
+                      audio_opts={"message": "full"}, ack_opts={"message": "ack"},
+                      ack_delay=0.4)
+    t5._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(1))
+    t5._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(2))
+    await asyncio.sleep(0.2)
+    t5._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(3))   # 確認音が鳴る前に押し直し
+    await asyncio.sleep(1.6)
+    print(f"   押し直し後: {[m for _, m in spoken]}")
+    assert [m for _, m in spoken] == ["ack", "full"], spoken   # 二重に鳴らない
+
+    # --no-ack 相当なら確認音は鳴らず、本編の時刻もずれない
+    spoken.clear()
+    t0 = time.monotonic()
+    t4 = bt.BathTimer("aa:bb:cc:dd:ee:ff", minutes=1.0 / 60, cooldown=0,
+                      audio_opts={"message": "full"}, ack_opts=None, ack_delay=0.4)
     t4._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(1))
     t4._handle(Dev("aa:bb:cc:dd:ee:ff"), unknown(2))
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.6)
     assert spoken == [], spoken
-    await asyncio.sleep(1.5)
-    assert spoken == ["full"], spoken
+    await asyncio.sleep(0.8)
+    print(f"   --no-ack: {spoken}")
+    assert [m for _, m in spoken] == ["full"], spoken
+    assert 0.9 <= spoken[0][0] <= 1.3, spoken
+
+    # ack_delay が待ち時間より長くても、本編が先に鳴ったりしない
+    capped = bt.BathTimer("aa:bb", minutes=1.0 / 60, cooldown=0,
+                          audio_opts={}, ack_opts={"message": "ack"}, ack_delay=99)
+    print(f"   ack_delay=99 -> {capped.ack_delay} に丸められる")
+    assert capped.ack_delay == capped.delay
     print("   --no-ack では確認音なし")
 
     # 別デバイスは無視する
