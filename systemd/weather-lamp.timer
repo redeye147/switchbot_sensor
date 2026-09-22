@@ -1,13 +1,14 @@
 [Unit]
-Description=Update the weather lamp every weekday morning
+Description=Update the weather lamp every hour
 
 [Timer]
-# 平日の 6:30。曜日や時刻はここで変える。
-OnCalendar=Mon..Fri 06:30
-# 起動が遅れて時刻を過ぎていたら、起動後に実行する
+# 毎時0分。起動直後にも一度走らせる。
+OnCalendar=*:00
+OnBootSec=2min
+# その時刻にラズパイが止まっていたら、起動後に実行する
 Persistent=true
-# 予報の更新と重ならないよう少しばらす
-RandomizedDelaySec=120
+# 気象庁の発表直後に集中しないよう少しばらす
+RandomizedDelaySec=60
 
 [Install]
 WantedBy=timers.target

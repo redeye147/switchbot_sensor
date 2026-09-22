@@ -64,32 +64,66 @@ def judge_jma(**kw):
     return weather.decide(summary)
 
 
-print("=== 気象庁: 4通りの判定と色 ===")
+print("=== 天気の分類と色 (晴・曇・雨・雪) ===")
+def kind_of(**kw):
+    summary = jma.summarise(jma_payload(**kw), DATE)
+    return weather.classify(summary), summary
+
 cases = [
-    ("暖かく晴れ", dict(weathers=("晴れ", "晴れ"), pops=("0", "0", "10", "0"),
-                        temps=("22", "30")), "none"),
-    ("寒いが晴れ", dict(weathers=("晴れ", "晴れ"), pops=("0", "0", "10", "0"),
-                        temps=("12", "20")), "jacket"),
-    ("暖かいが雨", dict(weathers=("雨", "くもり"), pops=("30", "70", "80", "40"),
-                        temps=("22", "30")), "umbrella"),
-    ("寒くて雨",   dict(weathers=("雨", "くもり"), pops=("30", "70", "80", "40"),
-                        temps=("12", "18")), "both"),
+    ("晴れ",           dict(weathers=("晴れ", "晴れ"), pops=("0",)*4),          "sunny"),
+    ("くもり",         dict(weathers=("くもり", "くもり"), pops=("20",)*4),     "cloudy"),
+    ("雨",             dict(weathers=("雨", "雨"), pops=("80",)*4),             "rain"),
+    ("雪",             dict(weathers=("雪", "雪"), pops=("80",)*4),             "snow"),
+    ("みぞれ",         dict(weathers=("みぞれ", "雪"), pops=("70",)*4),         "snow"),
+    ("雷雨",           dict(weathers=("くもり 所により 雷を伴い 雨", "くもり"),
+                            pops=("90",)*4),                                    "rain"),
 ]
 for name, kw, want in cases:
-    v = judge_jma(**kw)
-    key, rgb = wl.pick_color(v, wl.DEFAULT_CONFIG["colors"])
-    print(f"   {name:12} 傘={int(v['umbrella'])} 上着={int(v['jacket'])} "
-          f"-> {wl.COLOR_NAMES[key]} {rgb}")
-    assert key == want, (name, key, want)
+    kind, _ = kind_of(**kw)
+    rgb = wl.pick_color(kind, wl.DEFAULT_CONFIG["colors"])
+    print(f"   {name:12} -> {weather.WEATHER_NAMES[kind]} ({wl.COLOR_NAMES[kind]}) {rgb}")
+    assert kind == want, (name, kind, want)
 
 print()
-print("=== 予報文で降水を判定する (天気コードの上1桁では判定できない) ===")
-# 202「くもり一時雨」は 2 で始まるが雨を含む
+print("=== 予報文がその日全体でも、時間帯の降水確率を優先する ===")
+# 「くもり昼過ぎから雨」の朝。文には雨があるが、朝の確率は10%
+summary = jma.summarise(jma_payload(weathers=("くもり 昼過ぎ から 雨", "晴れ"),
+                                    pops=("0", "10", "70", "60")), DATE, window=(6, 11))
+kind = weather.classify(summary)
+print(f"   朝 (6-12時, 確率{summary['max_probability']}%) -> {weather.WEATHER_NAMES[kind]}")
+assert kind == "cloudy", "予報文の「雨」だけで朝まで雨にしてはいけない"
+
+summary = jma.summarise(jma_payload(weathers=("くもり 昼過ぎ から 雨", "晴れ"),
+                                    pops=("0", "10", "70", "60")), DATE, window=(12, 17))
+kind = weather.classify(summary)
+print(f"   昼 (12-18時, 確率{summary['max_probability']}%) -> {weather.WEATHER_NAMES[kind]}")
+assert kind == "rain"
+
+print()
+print("=== 時刻によって、いつの天気を見せるか変わる ===")
+import datetime
+expect = [(0, "今日の午前"), (5, "今日の午前"), (7, "今日 6時〜12時"),
+          (13, "今日 12時〜18時"), (20, "今日 18時〜24時"),
+          (22, "明日の午前"), (23, "明日の午前")]
+for hour, want_label in expect:
+    d, w, label = weather.target_period(datetime.datetime(2026, 9, 22, hour, 30))
+    print(f"   {hour:2}時 -> {label:16} {d} {w}")
+    assert label == want_label, (hour, label)
+    if hour >= 22:
+        assert d == "2026-09-23", "22時以降は翌日を見なければならない"
+    else:
+        assert d == "2026-09-22"
+    if "午前" in label:
+        # 終端を 12 にすると 12時始まりの区切りまで入ってしまう
+        assert w[1] < 12, f"午前なのに {w} を対象にしている"
+
+print()
+print("=== 傘・上着の判定は文字の補足として残す ===")
+# 202「くもり一時雨」は 2 で始まるが雨を含む。天気コードの上1桁では判定できない。
 for text, wet in (("くもり 一時 雨", True), ("くもり 時々 晴れ", False),
-                  ("雪 のち くもり", True), ("晴れ 時々 くもり", False),
-                  ("くもり 所により 雷を伴い 激しい雨", True)):
+                  ("雪 のち くもり", True), ("晴れ 時々 くもり", False)):
     v = judge_jma(weathers=(text, "晴れ"), pops=("0", "0", "0", "0"), temps=("22", "30"))
-    print(f"   {text:28} -> 傘={int(v['umbrella'])}")
+    print(f"   {text:20} -> {wl.advice(v)}")
     assert v["umbrella"] == wet, text
 
 print()
@@ -161,15 +195,16 @@ data = {"hourly": {
     "time": [f"{DATE}T{h:02d}:00" for h in range(24)],
     "temperature_2m": flat(12), "precipitation_probability": flat(80),
     "precipitation": flat(0.0), "weathercode": flat(61)}}
-v = weather.decide(om.summarise(data, DATE))
-key, _ = wl.pick_color(v, wl.DEFAULT_CONFIG["colors"])
-print(f"   傘={int(v['umbrella'])} 上着={int(v['jacket'])} -> {wl.COLOR_NAMES[key]}")
-assert key == "both" and v["source"] == "Open-Meteo"
+summary = om.summarise(data, DATE)
+v = weather.decide(summary)
+kind = weather.classify(summary)
+print(f"   {weather.WEATHER_NAMES[kind]} ({wl.COLOR_NAMES[kind]}) / {wl.advice(v)}")
+assert kind == "rain" and v["source"] == "Open-Meteo"
 
 print()
 print("=== 設定の取得元が不正なら分かるエラーにする ===")
 try:
-    wl.get_summary({"source": "yahoo", "window": [6, 21]}, DATE)
+    wl.get_summary({"source": "yahoo"}, DATE, (6, 21))
     raise AssertionError("不正な source で例外が出ていない")
 except weather.WeatherError as e:
     print(f"   {e}")

@@ -21,6 +21,13 @@ summary の形:
     detail              時間ごとの内訳 (--show 用)
 """
 
+# 表示する天気の種類
+SUNNY, CLOUDY, RAIN, SNOW = "sunny", "cloudy", "rain", "snow"
+WEATHER_NAMES = {SUNNY: "晴", CLOUDY: "曇", RAIN: "雨", SNOW: "雪"}
+
+# 気象庁の降水確率は6時間区切り
+BLOCK_HOURS = 6
+
 # 既定のしきい値
 RAIN_PROBABILITY = 50      # 降水確率 % これ以上で傘
 RAIN_AMOUNT = 1.0          # 降水量 mm 合計がこれ以上でも傘
@@ -78,3 +85,54 @@ def decide(summary, rain_probability=RAIN_PROBABILITY, rain_amount=RAIN_AMOUNT,
     verdict = dict(summary)
     verdict.update({"umbrella": umbrella, "jacket": jacket, "reasons": reasons})
     return verdict
+
+
+def target_period(now, night_hour=22, morning=(6, 11)):
+    """いつの天気を表示するかを決める。
+
+    夜遅くに今日の残りを見せても意味がないので、22時以降は翌朝に切り替える。
+    日付が変わってから朝までも同じ扱い (その日の朝を見せる)。
+    日中は、気象庁の降水確率に合わせて、今いる6時間区切りを対象にする。
+
+    「午前」は 6〜11時。終端を 12 にすると、12時始まりの区切りまで拾ってしまう。
+
+    戻り値は (対象日 "YYYY-MM-DD", 時間帯 (開始, 終了), 表示用のラベル)。
+    """
+    import datetime
+
+    if now.hour >= night_hour:
+        tomorrow = now.date() + datetime.timedelta(days=1)
+        return tomorrow.strftime("%Y-%m-%d"), morning, "明日の午前"
+    if now.hour < morning[0]:
+        return now.strftime("%Y-%m-%d"), morning, "今日の午前"
+
+    start = (now.hour // BLOCK_HOURS) * BLOCK_HOURS
+    end = start + BLOCK_HOURS
+    return now.strftime("%Y-%m-%d"), (start, end - 1), f"今日 {start}時〜{end}時"
+
+
+def classify(summary, rain_probability=RAIN_PROBABILITY):
+    """晴・曇・雨・雪のどれかに分類する。
+
+    降水確率が分かっていればそれを優先する。気象庁の予報文はその日全体を
+    表すので、「くもり昼過ぎから雨」の朝の時間帯まで雨にしないため。
+    予報文は、降るときに雨か雪かを分け、降らないときに晴か曇かを分けるのに使う。
+    """
+    text = summary.get("weather_text") or ""
+    snowing = any(w in text for w in ("雪", "みぞれ"))
+    prob = summary.get("max_probability")
+
+    if prob is not None:
+        if prob >= rain_probability:
+            return SNOW if snowing else RAIN
+    elif snowing:
+        return SNOW
+    elif any(w in text for w in ("雨", "雷")):
+        return RAIN
+
+    if "晴" in text:
+        return SUNNY
+    if text:
+        return CLOUDY
+    # 予報文が無いときは降水確率だけで決める
+    return CLOUDY if prob is None or prob >= 30 else SUNNY

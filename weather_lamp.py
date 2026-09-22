@@ -2,25 +2,31 @@
 # coding: utf-8
 """天気予報に応じて SwitchBot スマート電球の色を変える。
 
-朝、電球の色を見るだけで「傘がいるか」「上着がいるか」が分かるようにする。
+電球の色を見るだけで、これからの天気が分かるようにする。
 
-    緑     傘も上着も不要
-    橙     上着だけ必要 (寒い)
-    青     傘だけ必要 (降りそう)
-    紫     傘も上着も必要
+    黄     晴
+    白     曇
+    青     雨
+    水色   雪
+
+いつの天気を見せるかは時刻で決まる。
+
+    6時〜21時   今いる6時間区切り (気象庁の降水確率の単位に合わせる)
+    22時〜翌5時  次の朝 (6時〜12時)
 
     ./venv/bin/python weather_lamp.py --show      # 電球に触れず予報と判定を表示
     ./venv/bin/python weather_lamp.py             # 予報を見て電球を点ける
     ./venv/bin/python weather_lamp.py --off       # 消す
+    ./venv/bin/python weather_lamp.py --at 2026-09-22T23:30 --show   # 時刻を仮定
 
 場所やしきい値は weather_lamp.json で変える。初回実行時に作られる。
 """
 import argparse
 import asyncio
+import datetime
 import json
 import logging
 import pathlib
-import time
 
 import weather
 import weather_jma
@@ -30,28 +36,29 @@ log = logging.getLogger("weather_lamp")
 
 CONFIG_PATH = pathlib.Path(__file__).resolve().parent / "weather_lamp.json"
 
-# 愛知県。別の場所なら weather_lamp.json を書き換える。
-# 気象庁の府県予報区コードは次で調べられる:
+# 東京都大田区 = 東京都 (130000) の「東京地方」。気温の地点は「東京」。
+# 府県予報区コードは次で調べられる:
 #   https://www.jma.go.jp/bosai/common/const/area.json
 DEFAULT_CONFIG = {
     "source": "jma",
-    "area_code": "230000",
-    "area_name": None,          # 一次細分区域。null なら先頭 (愛知県なら「西部」)
-    "temp_point": None,         # 気温の地点。null なら先頭 (愛知県なら「名古屋」)
-    # source を "open-meteo" にしたときだけ使う
-    "latitude": 35.18,
-    "longitude": 136.91,
+    "area_code": "130000",
+    "area_name": "東京地方",     # 一次細分区域。null なら先頭
+    "temp_point": "東京",        # 気温の地点。null なら先頭
+    # source を "open-meteo" にしたときだけ使う (大田区の緯度経度)
+    "latitude": 35.561,
+    "longitude": 139.716,
     "mac": "80:65:99:9d:ad:de",
-    "window": [6, 21],
+    "night_hour": 22,            # この時刻以降は翌朝の天気を表示する
+    "morning": [6, 11],          # 「午前」とみなす時間帯 (6時〜11時台)
     "rain_probability": weather.RAIN_PROBABILITY,
     "rain_amount": weather.RAIN_AMOUNT,
     "jacket_temp": weather.JACKET_TEMP,
     "brightness": 80,
     "colors": {
-        "none":     [0, 200, 60],     # 緑   何も要らない
-        "jacket":   [255, 110, 0],    # 橙   上着だけ
-        "umbrella": [0, 80, 255],     # 青   傘だけ
-        "both":     [160, 0, 255],    # 紫   両方
+        "sunny":  [255, 180, 0],     # 黄   晴
+        "cloudy": [255, 255, 255],   # 白   曇
+        "rain":   [0, 60, 255],      # 青   雨
+        "snow":   [0, 220, 255],     # 水色 雪
     },
 }
 
@@ -71,70 +78,64 @@ def load_config(path=CONFIG_PATH):
     return config
 
 
-def get_summary(config, date):
+def get_summary(config, date, window):
     """設定された取得元から予報を取り、判定に使う形にして返す。"""
     source = str(config.get("source", "jma")).lower()
     if source in ("jma", "気象庁"):
         data = weather_jma.fetch(config["area_code"])
-        summary = weather_jma.summarise(data, date, tuple(config["window"]),
+        summary = weather_jma.summarise(data, date, window,
                                         config.get("area_name"),
                                         config.get("temp_point"))
         return summary, data
     if source in ("open-meteo", "openmeteo"):
         data = weather_openmeteo.fetch(config["latitude"], config["longitude"])
-        summary = weather_openmeteo.summarise(data, date, tuple(config["window"]),
+        summary = weather_openmeteo.summarise(data, date, window,
                                               place=config.get("place"))
         return summary, data
     raise weather.WeatherError(
         f"source が不正です: {config.get('source')!r} (jma か open-meteo)")
 
 
-def pick_color(verdict, colors):
-    """判定から色を選ぶ。"""
-    if verdict["umbrella"] and verdict["jacket"]:
-        return "both", colors["both"]
+COLOR_NAMES = {"sunny": "黄", "cloudy": "白", "rain": "青", "snow": "水色"}
+
+
+def pick_color(kind, colors):
+    """天気の種類から色を選ぶ。"""
+    return colors[kind]
+
+
+def advice(verdict):
+    """傘・上着の要否を一言で返す。色とは別に、文字で補足する。"""
+    parts = []
     if verdict["umbrella"]:
-        return "umbrella", colors["umbrella"]
+        parts.append("傘")
     if verdict["jacket"]:
-        return "jacket", colors["jacket"]
-    return "none", colors["none"]
+        parts.append("上着")
+    return " と ".join(parts) + " が必要" if parts else "傘も上着も不要"
 
 
-LABELS = {
-    "none": "傘も上着も不要",
-    "jacket": "上着が必要",
-    "umbrella": "傘が必要",
-    "both": "傘と上着が必要",
-}
-COLOR_NAMES = {"none": "緑", "jacket": "橙", "umbrella": "青", "both": "紫"}
-
-
-def describe(config, verdict, key):
+def describe(config, verdict, kind, label):
     """人が読む形にまとめる。"""
     place = verdict.get("place") or config.get("area_code") or "?"
     lines = [
-        f"{verdict['source']}  {place}  {verdict['date']}",
-        f"対象時間帯: {config['window'][0]}時〜{config['window'][1]}時",
+        f"{verdict['source']}  {place}  {label}  ({verdict['date']})",
         "",
+        f"  天気        : {weather.WEATHER_NAMES[kind]}  -> {COLOR_NAMES[kind]}",
     ]
     if verdict.get("weather_text"):
-        lines.append(f"  予報        : {verdict['weather_text']}")
+        lines.append(f"  予報文      : {verdict['weather_text']}")
     lines += [
+        f"  降水確率最大: {_unit(verdict['max_probability'], '%')}",
         f"  最高気温    : {_unit(verdict['max_temperature'], '度')}",
         f"  最低気温    : {_unit(verdict['min_temperature'], '度')}",
-        f"  降水確率最大: {_unit(verdict['max_probability'], '%')}",
     ]
     if verdict["total_precipitation"] is not None:
         lines.append(f"  降水量合計  : {verdict['total_precipitation']}mm")
-    if verdict["wet_periods"]:
-        lines.append(f"  降りそうな時間: {', '.join(verdict['wet_periods'])}")
-
-    lines += ["", f"  判定: {LABELS[key]} -> {COLOR_NAMES[key]}"]
+    lines += ["", f"  持ち物      : {advice(verdict)}"]
     for reason in verdict["reasons"]:
         lines.append(f"    - {reason}")
-    if not verdict["reasons"]:
-        lines.append("    - しきい値を超える要素なし")
     return "\n".join(lines)
+
 
 
 def _unit(value, unit):
@@ -179,7 +180,7 @@ async def main():
     ap.add_argument("--raw", action="store_true",
                     help="取得した予報の中身をそのまま表示する (解析の確認用)")
     ap.add_argument("--off", action="store_true", help="電球を消して終了")
-    ap.add_argument("--date", help="対象日 (既定: 今日)。例 2026-09-23")
+    ap.add_argument("--at", help="この時刻として判断する (確認用)。例 2026-09-22T23:30")
     ap.add_argument("--dry-run", action="store_true",
                     help="判定はするが電球には送らない (送信内容は表示する)")
     ap.add_argument("--config", type=pathlib.Path, default=CONFIG_PATH)
@@ -192,10 +193,12 @@ async def main():
         print(await turn_off(config["mac"]))
         return
 
-    date = args.date or time.strftime("%Y-%m-%d")
+    now = datetime.datetime.fromisoformat(args.at) if args.at else datetime.datetime.now()
+    date, window, label = weather.target_period(
+        now, config.get("night_hour", 22), tuple(config.get("morning", [6, 11])))
 
     try:
-        summary, data = get_summary(config, date)
+        summary, data = get_summary(config, date, window)
     except weather.WeatherError as e:
         log.error("%s", e)
         raise SystemExit(1)
@@ -209,9 +212,10 @@ async def main():
 
     verdict = weather.decide(summary, config["rain_probability"],
                              config["rain_amount"], config["jacket_temp"])
-    key, rgb = pick_color(verdict, config["colors"])
+    kind = weather.classify(summary, config["rain_probability"])
+    rgb = pick_color(kind, config["colors"])
 
-    print(describe(config, verdict, key))
+    print(describe(config, verdict, kind, label))
 
     if args.show:
         print()
