@@ -53,28 +53,41 @@ def decide(summary, rain_probability=RAIN_PROBABILITY, rain_amount=RAIN_AMOUNT,
            jacket_temp=JACKET_TEMP):
     """傘と上着の要否を決める。判断の根拠も返す。
 
-    傘   … 出かけている時間帯のどこかで降りそうなら必要。朝が晴れでも夜に降る
-            なら持って出る必要があるため、朝だけでなく帰宅時刻までを見る。
+    傘   … 対象の時間帯に降りそうなら必要。
     上着 … 同じ時間帯の最低気温で決める。昼が暖かくても朝晩が冷えるなら要る。
+
+    降水確率が分かっていればそれを優先し、予報文だけで覆さない。classify()
+    (色の決定) と同じ根拠にするため。気象庁の予報文はその日全体を表すので、
+    「くもり所により朝晩雨」を確率20%の時間帯にまで適用すると、色は曇なのに
+    持ち物は傘、という食い違いが起きる。
+
+    確率が低いのに予報文が雨に触れている場合は、覆さずに notes で伝える。
     """
     reasons = []
+    notes = []
     umbrella = False
 
     prob = summary["max_probability"]
-    if prob is not None and prob >= rain_probability:
-        umbrella = True
-        reasons.append(f"降水確率が最大 {prob}% ({rain_probability}% 以上)")
-
     amount = summary["total_precipitation"]
+    wet_text = summary["has_precipitation"]
+    text = summary["weather_text"]
+
+    if prob is not None:
+        if prob >= rain_probability:
+            umbrella = True
+            reasons.append(f"降水確率が最大 {prob}% ({rain_probability}% 以上)")
+        elif wet_text:
+            notes.append(f"予報文に雨や雪がありますが（{text}）、"
+                         f"この時間帯の降水確率は {prob}% です")
+    elif wet_text:
+        umbrella = True
+        reasons.append(f"予報に雨または雪が含まれる（{text}）" if text
+                       else "予報に雨または雪が含まれる")
+
+    # 降水量は確率と別の根拠。出る取得元 (Open-Meteo) でのみ使う。
     if amount is not None and amount >= rain_amount:
         umbrella = True
         reasons.append(f"降水量の合計が {amount}mm ({rain_amount}mm 以上)")
-
-    if summary["has_precipitation"]:
-        umbrella = True
-        text = summary["weather_text"]
-        reasons.append(f"予報に雨または雪が含まれる（{text}）" if text
-                       else "予報に雨または雪が含まれる")
 
     jacket = False
     low = summary["min_temperature"]
@@ -83,7 +96,8 @@ def decide(summary, rain_probability=RAIN_PROBABILITY, rain_amount=RAIN_AMOUNT,
         reasons.append(f"最低気温が {low}度 ({jacket_temp}度 以下)")
 
     verdict = dict(summary)
-    verdict.update({"umbrella": umbrella, "jacket": jacket, "reasons": reasons})
+    verdict.update({"umbrella": umbrella, "jacket": jacket,
+                    "reasons": reasons, "notes": notes})
     return verdict
 
 

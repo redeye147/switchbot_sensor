@@ -118,13 +118,22 @@ for hour, want_label in expect:
         assert w[1] < 12, f"午前なのに {w} を対象にしている"
 
 print()
-print("=== 傘・上着の判定は文字の補足として残す ===")
-# 202「くもり一時雨」は 2 で始まるが雨を含む。天気コードの上1桁では判定できない。
-for text, wet in (("くもり 一時 雨", True), ("くもり 時々 晴れ", False),
-                  ("雪 のち くもり", True), ("晴れ 時々 くもり", False)):
-    v = judge_jma(weathers=(text, "晴れ"), pops=("0", "0", "0", "0"), temps=("22", "30"))
-    print(f"   {text:20} -> {wl.advice(v)}")
-    assert v["umbrella"] == wet, text
+print("=== 予報文が効くのは、降水確率が分からないときだけ ===")
+# 202「くもり一時雨」は 2 で始まるので、天気コードの上1桁では雨と分からない。
+# 予報文で拾うが、時間帯の降水確率が分かっているならそちらを優先する。
+for text, wet_text in (("くもり 一時 雨", True), ("くもり 時々 晴れ", False),
+                       ("雪 のち くもり", True), ("晴れ 時々 くもり", False)):
+    # 確率0% と分かっている場合: 予報文では覆さない
+    known = judge_jma(weathers=(text, "晴れ"), pops=("0", "0", "0", "0"),
+                      temps=("22", "30"))
+    # 確率が取れない場合: 予報文で決める
+    blank = judge_jma(weathers=(text, "晴れ"), pops=("", "", "", ""),
+                      temps=("22", "30"))
+    print(f"   {text:18} 確率0%->{wl.advice(known):24} 確率不明->{wl.advice(blank)}")
+    assert not known["umbrella"], f"{text}: 確率0%なのに傘が必要になっている"
+    assert blank["umbrella"] == wet_text, text
+    if wet_text:
+        assert known["notes"], f"{text}: 覆さないなら注記を残すこと"
 
 print()
 print("=== 朝は晴れでも、帰宅時間に降るなら傘 ===")
@@ -187,6 +196,41 @@ print("=== 構造の表示 (--raw) が読める形になっている ===")
 text = jma.outline(jma_payload())
 assert "名古屋地方気象台" in text and "pops" in text and "temps" in text
 print("\n".join("   " + l for l in text.split("\n")[:6]))
+
+print()
+print("=== 色と持ち物が同じ根拠で決まる ===")
+# 実機で起きた食い違い: 色は「曇」なのに持ち物は「傘が必要」
+def colour_and_advice(**kw):
+    summary = weather.empty_summary("気象庁", "東京地方", DATE)
+    summary.update(kw)
+    return weather.classify(summary), weather.decide(summary)
+
+samples = [
+    ("確率20% 文に雨", dict(max_probability=20, has_precipitation=True,
+                            weather_text="くもり 所により 朝晩 雨"), "cloudy", False),
+    ("確率70% 文に雨", dict(max_probability=70, has_precipitation=True,
+                            weather_text="雨"), "rain", True),
+    ("確率20% 文は晴", dict(max_probability=20, weather_text="晴れ"), "sunny", False),
+    ("確率不明 文に雨", dict(has_precipitation=True, weather_text="雨"), "rain", True),
+]
+for name, kw, want_kind, want_umbrella in samples:
+    kind, v = colour_and_advice(**kw)
+    print(f"   {name:18} 色={weather.WEATHER_NAMES[kind]}  傘={int(v['umbrella'])}")
+    assert kind == want_kind, (name, kind)
+    assert v["umbrella"] == want_umbrella, (name, v["umbrella"])
+    # 色が雨かどうかと、傘が必要かどうかは一致していなければならない
+    assert (kind == "rain") == v["umbrella"], f"{name} で色と持ち物が食い違っている"
+
+# 覆さない代わりに、予報文が雨に触れていることは伝える
+_, v = colour_and_advice(max_probability=20, has_precipitation=True,
+                         weather_text="くもり 所により 朝晩 雨")
+assert v["notes"] and "20%" in v["notes"][0], v["notes"]
+print(f"   注記: {v['notes'][0]}")
+
+# 降水量は確率とは別の根拠として残す (Open-Meteo 用)
+_, v = colour_and_advice(max_probability=20, total_precipitation=5.0)
+assert v["umbrella"], "降水量による判定が効いていない"
+print("   降水量が多ければ、確率が低くても傘が必要になる")
 
 print()
 print("=== 0時〜6時は消灯する ===")

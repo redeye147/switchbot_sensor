@@ -160,6 +160,8 @@ def describe(config, verdict, kind, label):
     lines += ["", f"  持ち物      : {advice(verdict)}"]
     for reason in verdict["reasons"]:
         lines.append(f"    - {reason}")
+    for note in verdict.get("notes") or []:
+        lines.append(f"    ※ {note}")
     return "\n".join(lines)
 
 
