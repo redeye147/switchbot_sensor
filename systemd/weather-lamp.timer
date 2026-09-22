@@ -1,0 +1,13 @@
+[Unit]
+Description=Update the weather lamp every weekday morning
+
+[Timer]
+# 平日の 6:30。曜日や時刻はここで変える。
+OnCalendar=Mon..Fri 06:30
+# 起動が遅れて時刻を過ぎていたら、起動後に実行する
+Persistent=true
+# 予報の更新と重ならないよう少しばらす
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

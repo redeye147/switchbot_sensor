@@ -6,3 +6,4 @@ venv/
 config.local.*
 .DS_Store
 sounds/
+weather_lamp.json

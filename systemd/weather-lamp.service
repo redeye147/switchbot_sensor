@@ -1,0 +1,15 @@
+[Unit]
+Description=Set the SwitchBot bulb colour from the weather forecast
+After=network-online.target bluetooth.target bluetooth.service
+Wants=network-online.target bluetooth.service
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/switchbot_sensor
+# .bashrc は読まれないが、システムの dist-packages が混入しないよう明示する
+Environment=PYTHONPATH=
+ExecStartPre=/home/pi/switchbot_sensor/wait_for_bluetooth.sh 60
+ExecStart=/home/pi/switchbot_sensor/venv/bin/python /home/pi/switchbot_sensor/weather_lamp.py
+StandardOutput=journal
+StandardError=journal

@@ -45,6 +45,8 @@ sudo apt install -y python3-venv bluez
 | `switchbot_plug.py` | プラグミニ用。複数台を同時監視できる |
 | `switchbot_light.py` | スマート電球 / テープライト用。実機未検証 |
 | `switchbot_control.py` | **電球を BLE 接続して制御する**（唯一の送信側） |
+| `weather_lamp.py` | 天気予報に応じて電球の色を変える |
+| `weather.py` | 予報の取得と、傘・上着の要否判定 |
 | `bath_timer.py` | ボタンを押したら一定時間後に音声でお知らせする |
 | `announce.py` | 音声の生成 (espeak-ng) と再生 (aplay) |
 | `learn_button.py` | どの機器がボタンかを押下時刻との対応で特定する |
@@ -488,6 +490,99 @@ cw 2700 -> 570f4701170a8c
   応答のステータスが `0x07 デバイスが暗号化されている` になります
 - 応答が返らない場合、コマンド自体は届いている可能性があります。電球の状態を
   `status` で確認してください
+
+## 天気ランプ
+
+朝、電球の色を見るだけで**傘がいるか・上着がいるか**が分かるようにします。
+
+| 色 | 意味 |
+|---|---|
+| 緑 | 傘も上着も不要 |
+| 橙 | 上着だけ必要（寒い） |
+| 青 | 傘だけ必要（降りそう） |
+| 紫 | 傘も上着も必要 |
+
+```bash
+./venv/bin/python weather_lamp.py --show      # 電球に触れず予報と判定を表示
+./venv/bin/python weather_lamp.py             # 予報を見て電球を点ける
+./venv/bin/python weather_lamp.py --off       # 消す
+```
+
+### 予報の取得元
+
+[Open-Meteo](https://open-meteo.com/) を使います。**APIキー不要・無料**で、
+時間別の降水確率・降水量・気温・天気コードが取れます。追加ライブラリも不要です
+(標準の `urllib` で足ります)。
+
+### 設定
+
+初回実行時に `weather_lamp.json` が作られます。**場所の既定値は名古屋なので、
+違う場合は書き換えてください。**
+
+```json
+{
+  "place": "名古屋",
+  "latitude": 35.18,
+  "longitude": 136.91,
+  "mac": "80:65:99:9d:ad:de",
+  "window": [6, 21],
+  "rain_probability": 50,
+  "rain_amount": 1.0,
+  "jacket_temp": 18.0,
+  "brightness": 80,
+  "colors": { "none": [0,200,60], "jacket": [255,110,0],
+              "umbrella": [0,80,255], "both": [160,0,255] }
+}
+```
+
+設定ファイルは追跡していません (`.gitignore` 済み)。`git pull` で上書きされません。
+
+### 判定の考え方
+
+**傘** — 次のどれかに当てはまれば必要と判断します。
+
+- 降水確率の最大が `rain_probability` 以上
+- 降水量の合計が `rain_amount` 以上
+- 天気コードに雨・雪・雷が含まれる
+
+**朝だけでなく帰宅時刻まで（既定 6時〜21時）を見ます。** 朝が晴れでも夜に降るなら
+傘は持って出る必要があるためです。`window` で変えられます。
+
+**上着** — 同じ時間帯の**最低気温**が `jacket_temp` 以下なら必要と判断します。
+昼が暖かくても朝晩が冷えるなら要るためです。
+
+判断の根拠は毎回表示されます。
+
+```
+  判定: 傘と上着が必要 -> 紫
+    - 降水確率が最大 80% (50% 以上)
+    - 降水量の合計が 2.9mm (1.0mm 以上)
+    - 最低気温が 14度 (18.0度 以下)
+  降りそうな時間: 16時, 17時, 18時, 19時
+```
+
+`--show` を付けると時間ごとの内訳も出ます。しきい値を自分の感覚に合わせるときに
+使ってください。
+
+### 毎朝自動で実行する
+
+```bash
+sudo cp systemd/weather-lamp*.service systemd/weather-lamp*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now weather-lamp.timer weather-lamp-off.timer
+systemctl list-timers weather-lamp\*
+```
+
+平日 6:30 に色を変え、9:00 に消します。時刻は `.timer` の `OnCalendar` で
+変えてください。`Persistent=true` なので、その時刻にラズパイが止まっていた場合は
+起動後に実行されます。
+
+### 未検証の部分
+
+**API のレスポンス形式は実機で未確認です。** 開発環境から Open-Meteo への接続が
+できなかったため、公式ドキュメントに基づいて実装しています。判定ロジックは
+固定データで検証済みですが、**実際の応答との突き合わせは `--show` で行って
+ください。** 項目名が違えば、そこでエラーになるか値が `None` になります。
 
 ## お風呂タイマー
 
