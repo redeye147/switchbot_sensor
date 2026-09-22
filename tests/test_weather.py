@@ -189,6 +189,32 @@ assert "名古屋地方気象台" in text and "pops" in text and "temps" in text
 print("\n".join("   " + l for l in text.split("\n")[:6]))
 
 print()
+print("=== 判断材料が無いものを「不要」と言わない ===")
+# 実機で起きた例: 17時発表の予報を19時台に見ると、当日の気温が落ちている
+def verdict_with(**kw):
+    summary = weather.empty_summary("気象庁", "東京地方", DATE)
+    summary.update(kw)
+    return weather.decide(summary)
+
+no_temp = verdict_with(max_probability=10, weather_text="晴れ 夜遅く くもり")
+text = wl.advice(no_temp)
+print(f"   気温なし  -> {text}")
+assert "上着" in text and "判断できません" in text
+assert "上着 は不要" not in text and "傘も上着も不要" not in text
+
+warm = verdict_with(max_probability=10, weather_text="晴れ", min_temperature=22.0)
+print(f"   気温あり  -> {wl.advice(warm)}")
+assert wl.advice(warm) == "傘も上着も不要"
+
+nothing = verdict_with()
+print(f"   全部不明  -> {wl.advice(nothing)}")
+assert "傘・上着 は判断できません（予報に値がありません）" == wl.advice(nothing)
+
+both = verdict_with(max_probability=80, weather_text="雨", min_temperature=10.0)
+print(f"   雨で寒い  -> {wl.advice(both)}")
+assert wl.advice(both) == "傘・上着 が必要"
+
+print()
 print("=== Open-Meteo も同じ判定に乗る ===")
 flat = lambda v: [v] * 24
 data = {"hourly": {

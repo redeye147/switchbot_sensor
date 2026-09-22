@@ -105,13 +105,37 @@ def pick_color(kind, colors):
 
 
 def advice(verdict):
-    """傘・上着の要否を一言で返す。色とは別に、文字で補足する。"""
-    parts = []
+    """傘・上着の要否を一言で返す。色とは別に、文字で補足する。
+
+    判断材料が無いものを「不要」と言わないこと。気象庁の3日予報は夕方の発表で
+    当日分の気温が落ち、週間予報は翌日以降しか持たないため、夕方に「今日」を
+    見ると気温が欠ける。そのとき上着の要否は判断できない。
+    """
+    need, no_need, unknown = [], [], []
+
     if verdict["umbrella"]:
-        parts.append("傘")
+        need.append("傘")
+    elif verdict["max_probability"] is None and not verdict["weather_text"]:
+        unknown.append("傘")
+    else:
+        no_need.append("傘")
+
     if verdict["jacket"]:
-        parts.append("上着")
-    return " と ".join(parts) + " が必要" if parts else "傘も上着も不要"
+        need.append("上着")
+    elif verdict["min_temperature"] is None:
+        unknown.append("上着")
+    else:
+        no_need.append("上着")
+
+    parts = []
+    if need:
+        parts.append("・".join(need) + " が必要")
+    if no_need:
+        parts.append(("・".join(no_need) + " は不要") if need or unknown
+                     else "傘も上着も不要")
+    if unknown:
+        parts.append("・".join(unknown) + " は判断できません（予報に値がありません）")
+    return "。".join(parts)
 
 
 def describe(config, verdict, kind, label):
