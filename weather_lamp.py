@@ -12,7 +12,8 @@
 いつの天気を見せるかは時刻で決まる。
 
     6時〜21時   今いる6時間区切り (気象庁の降水確率の単位に合わせる)
-    22時〜翌5時  次の朝 (6時〜12時)
+    22時〜23時   次の朝 (6時〜12時)
+    0時〜5時    消灯 (quiet_hours)
 
     ./venv/bin/python weather_lamp.py --show      # 電球に触れず予報と判定を表示
     ./venv/bin/python weather_lamp.py             # 予報を見て電球を点ける
@@ -49,6 +50,7 @@ DEFAULT_CONFIG = {
     "longitude": 139.716,
     "mac": "80:65:99:9d:ad:de",
     "night_hour": 22,            # この時刻以降は翌朝の天気を表示する
+    "quiet_hours": [0, 6],       # この時間帯は消灯する (0時〜5時台)
     "morning": [6, 11],          # 「午前」とみなす時間帯 (6時〜11時台)
     "rain_probability": weather.RAIN_PROBABILITY,
     "rain_amount": weather.RAIN_AMOUNT,
@@ -218,8 +220,20 @@ async def main():
         return
 
     now = datetime.datetime.fromisoformat(args.at) if args.at else datetime.datetime.now()
+    quiet = config.get("quiet_hours")
+    sleeping = weather.in_quiet_hours(now, quiet)
     date, window, label = weather.target_period(
         now, config.get("night_hour", 22), tuple(config.get("morning", [6, 11])))
+
+    if sleeping and not (args.show or args.raw):
+        # 予報を取りに行く必要はない。消すだけ。
+        log.info("%d時〜%d時台は消灯します", quiet[0], (quiet[1] - 1) % 24)
+        try:
+            print(await turn_off(config["mac"]))
+        except Exception as e:
+            log.error("電球を消せませんでした: %s", e)
+            raise SystemExit(1)
+        return
 
     try:
         summary, data = get_summary(config, date, window)
@@ -240,6 +254,10 @@ async def main():
     rgb = pick_color(kind, config["colors"])
 
     print(describe(config, verdict, kind, label))
+    if sleeping:
+        print()
+        print(f"  ※ この時刻は消灯時間帯です ({quiet[0]}時〜{(quiet[1] - 1) % 24}時台)。"
+              "通常実行では電球を消します")
 
     if args.show:
         print()

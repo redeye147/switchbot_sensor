@@ -189,6 +189,40 @@ assert "名古屋地方気象台" in text and "pops" in text and "temps" in text
 print("\n".join("   " + l for l in text.split("\n")[:6]))
 
 print()
+print("=== 0時〜6時は消灯する ===")
+import datetime
+QUIET = [0, 6]
+for hour in range(24):
+    now = datetime.datetime(2026, 9, 22, hour, 30)
+    sleeping = weather.in_quiet_hours(now, QUIET)
+    want = hour < 6
+    assert sleeping == want, (hour, sleeping)
+print("   消灯: " + ", ".join(f"{h}時" for h in range(24)
+                              if weather.in_quiet_hours(datetime.datetime(2026, 9, 22, h), QUIET)))
+print("   点灯: " + ", ".join(f"{h}時" for h in range(24)
+                              if not weather.in_quiet_hours(datetime.datetime(2026, 9, 22, h), QUIET)))
+
+# 22時台・23時台は点灯したまま「明日の午前」を見せる
+for hour in (22, 23):
+    now = datetime.datetime(2026, 9, 22, hour, 30)
+    assert not weather.in_quiet_hours(now, QUIET)
+    _, _, label = weather.target_period(now)
+    assert label == "明日の午前"
+print("   22・23時台は点灯したまま「明日の午前」を表示する")
+
+# 日をまたぐ指定もできる
+for hour, want in ((22, True), (23, True), (0, True), (5, True), (6, False), (12, False)):
+    got = weather.in_quiet_hours(datetime.datetime(2026, 9, 22, hour), [22, 6])
+    assert got == want, (hour, got)
+print("   [22, 6] のように日をまたぐ指定も扱える")
+
+# 空や同値なら消灯しない
+assert not weather.in_quiet_hours(datetime.datetime(2026, 9, 22, 3), None)
+assert not weather.in_quiet_hours(datetime.datetime(2026, 9, 22, 3), [])
+assert not weather.in_quiet_hours(datetime.datetime(2026, 9, 22, 3), [6, 6])
+print("   未設定や同値なら常に点灯")
+
+print()
 print("=== 判断材料が無いものを「不要」と言わない ===")
 # 実機で起きた例: 17時発表の予報を19時台に見ると、当日の気温が落ちている
 def verdict_with(**kw):

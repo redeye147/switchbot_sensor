@@ -111,6 +111,23 @@ def target_period(now, night_hour=22, morning=(6, 11)):
     return now.strftime("%Y-%m-%d"), (start, end - 1), f"今日 {start}時〜{end}時"
 
 
+def in_quiet_hours(now, quiet):
+    """消灯する時間帯かどうか。
+
+    quiet は (開始時, 終了時)。終了時は含まない。[0, 6] なら 0時〜5時台。
+    [22, 6] のように日をまたぐ指定もできる。
+    """
+    if not quiet:
+        return False
+    start, end = quiet
+    if start == end:
+        return False
+    hour = now.hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end      # 日をまたぐ
+
+
 def classify(summary, rain_probability=RAIN_PROBABILITY):
     """晴・曇・雨・雪のどれかに分類する。
 
