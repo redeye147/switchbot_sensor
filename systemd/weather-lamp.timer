@@ -2,10 +2,11 @@
 Description=Update the weather lamp every hour
 
 [Timer]
-# 毎時0分。起動直後にも一度走らせる。
-OnCalendar=*:00
-OnBootSec=2min
-# その時刻にラズパイが止まっていたら、起動後に実行する
+# 毎時0分。systemd の定義済みの値で、*-*-* *:00:00 と同じ。
+# 単調時刻 (OnBootSec) と混ぜると次回が算出されないことがあるので混ぜない。
+OnCalendar=hourly
+# 起動していなかった間に予定時刻を過ぎていたら、起動後すぐ実行する。
+# 毎朝の再起動で 6時台の実行を取りこぼさないのはこの設定による。
 Persistent=true
 # 気象庁の発表直後に集中しないよう少しばらす
 RandomizedDelaySec=60
