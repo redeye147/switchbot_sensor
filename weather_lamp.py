@@ -23,14 +23,22 @@ import pathlib
 import time
 
 import weather
+import weather_jma
+import weather_openmeteo
 
 log = logging.getLogger("weather_lamp")
 
 CONFIG_PATH = pathlib.Path(__file__).resolve().parent / "weather_lamp.json"
 
-# 名古屋。別の場所なら weather_lamp.json を書き換える。
+# 愛知県。別の場所なら weather_lamp.json を書き換える。
+# 気象庁の府県予報区コードは次で調べられる:
+#   https://www.jma.go.jp/bosai/common/const/area.json
 DEFAULT_CONFIG = {
-    "place": "名古屋",
+    "source": "jma",
+    "area_code": "230000",
+    "area_name": None,          # 一次細分区域。null なら先頭 (愛知県なら「西部」)
+    "temp_point": None,         # 気温の地点。null なら先頭 (愛知県なら「名古屋」)
+    # source を "open-meteo" にしたときだけ使う
     "latitude": 35.18,
     "longitude": 136.91,
     "mac": "80:65:99:9d:ad:de",
@@ -54,14 +62,31 @@ def load_config(path=CONFIG_PATH):
         path.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2) + "\n",
                         encoding="utf-8")
         log.warning("設定ファイルを作りました: %s", path)
-        log.warning("場所が %s (%s, %s) になっています。違う場合は書き換えてください",
-                    DEFAULT_CONFIG["place"], DEFAULT_CONFIG["latitude"],
-                    DEFAULT_CONFIG["longitude"])
+        log.warning("取得元 %s / エリア %s になっています。違う場合は書き換えてください",
+                    DEFAULT_CONFIG["source"], DEFAULT_CONFIG["area_code"])
         return dict(DEFAULT_CONFIG)
 
     config = dict(DEFAULT_CONFIG)
     config.update(json.loads(path.read_text(encoding="utf-8")))
     return config
+
+
+def get_summary(config, date):
+    """設定された取得元から予報を取り、判定に使う形にして返す。"""
+    source = str(config.get("source", "jma")).lower()
+    if source in ("jma", "気象庁"):
+        data = weather_jma.fetch(config["area_code"])
+        summary = weather_jma.summarise(data, date, tuple(config["window"]),
+                                        config.get("area_name"),
+                                        config.get("temp_point"))
+        return summary, data
+    if source in ("open-meteo", "openmeteo"):
+        data = weather_openmeteo.fetch(config["latitude"], config["longitude"])
+        summary = weather_openmeteo.summarise(data, date, tuple(config["window"]),
+                                              place=config.get("place"))
+        return summary, data
+    raise weather.WeatherError(
+        f"source が不正です: {config.get('source')!r} (jma か open-meteo)")
 
 
 def pick_color(verdict, colors):
@@ -84,20 +109,26 @@ LABELS = {
 COLOR_NAMES = {"none": "緑", "jacket": "橙", "umbrella": "青", "both": "紫"}
 
 
-def describe(config, date, rows, verdict, key):
+def describe(config, verdict, key):
     """人が読む形にまとめる。"""
+    place = verdict.get("place") or config.get("area_code") or "?"
     lines = [
-        f"{config['place']} ({config['latitude']}, {config['longitude']})  {date}",
+        f"{verdict['source']}  {place}  {verdict['date']}",
         f"対象時間帯: {config['window'][0]}時〜{config['window'][1]}時",
         "",
-        f"  最高気温    : {verdict['max_temperature']}度",
-        f"  最低気温    : {verdict['min_temperature']}度",
-        f"  降水確率最大: {verdict['max_probability']}%",
-        f"  降水量合計  : {verdict['total_precipitation']}mm",
     ]
-    if verdict["wet_hours"]:
-        hours = ", ".join(f"{h}時" for h in verdict["wet_hours"])
-        lines.append(f"  降りそうな時間: {hours}")
+    if verdict.get("weather_text"):
+        lines.append(f"  予報        : {verdict['weather_text']}")
+    lines += [
+        f"  最高気温    : {_unit(verdict['max_temperature'], '度')}",
+        f"  最低気温    : {_unit(verdict['min_temperature'], '度')}",
+        f"  降水確率最大: {_unit(verdict['max_probability'], '%')}",
+    ]
+    if verdict["total_precipitation"] is not None:
+        lines.append(f"  降水量合計  : {verdict['total_precipitation']}mm")
+    if verdict["wet_periods"]:
+        lines.append(f"  降りそうな時間: {', '.join(verdict['wet_periods'])}")
+
     lines += ["", f"  判定: {LABELS[key]} -> {COLOR_NAMES[key]}"]
     for reason in verdict["reasons"]:
         lines.append(f"    - {reason}")
@@ -106,12 +137,22 @@ def describe(config, date, rows, verdict, key):
     return "\n".join(lines)
 
 
-def hourly_table(rows):
-    """時間ごとの内訳。--show で使う。"""
-    out = ["  時刻   気温   降水確率   降水量"]
+def _unit(value, unit):
+    return "不明" if value is None else f"{value}{unit}"
+
+
+def detail_table(verdict):
+    """時間帯ごとの内訳。--show で使う。取得元により列が違う。"""
+    rows = verdict.get("detail") or []
+    if not rows:
+        return "  (内訳なし)"
+    has_temp = any("temperature" in r for r in rows)
+    out = ["  時間帯      降水確率" + ("   気温    降水量" if has_temp else "")]
     for r in rows:
-        out.append(f"  {r['hour']:2}時  {r['temperature']:5}度  "
-                   f"{r['probability']:5}%   {r['precipitation']:5}mm")
+        line = f"  {r['label']:10} {_unit(r.get('probability'), '%'):>7}"
+        if has_temp:
+            line += f"  {_unit(r.get('temperature'), '度'):>7} {_unit(r.get('precipitation'), 'mm'):>8}"
+        out.append(line)
     return "\n".join(out)
 
 
@@ -135,6 +176,8 @@ async def main():
     ap = argparse.ArgumentParser(description="天気に応じて SwitchBot 電球の色を変える")
     ap.add_argument("--show", action="store_true",
                     help="電球に触れず、予報と判定だけ表示する")
+    ap.add_argument("--raw", action="store_true",
+                    help="取得した予報の中身をそのまま表示する (解析の確認用)")
     ap.add_argument("--off", action="store_true", help="電球を消して終了")
     ap.add_argument("--date", help="対象日 (既定: 今日)。例 2026-09-23")
     ap.add_argument("--dry-run", action="store_true",
@@ -152,21 +195,27 @@ async def main():
     date = args.date or time.strftime("%Y-%m-%d")
 
     try:
-        data = weather.fetch(config["latitude"], config["longitude"])
-        rows = weather.hours_for(data, date, tuple(config["window"]))
+        summary, data = get_summary(config, date)
     except weather.WeatherError as e:
         log.error("%s", e)
         raise SystemExit(1)
 
-    verdict = weather.decide(rows, config["rain_probability"],
+    if args.raw:
+        if str(config.get("source", "jma")).lower() in ("jma", "気象庁"):
+            print(weather_jma.outline(data))
+        else:
+            print(json.dumps(data, ensure_ascii=False, indent=2)[:4000])
+        print()
+
+    verdict = weather.decide(summary, config["rain_probability"],
                              config["rain_amount"], config["jacket_temp"])
     key, rgb = pick_color(verdict, config["colors"])
 
-    print(describe(config, date, rows, verdict, key))
+    print(describe(config, verdict, key))
 
     if args.show:
         print()
-        print(hourly_table(rows))
+        print(detail_table(verdict))
         return
 
     print()
