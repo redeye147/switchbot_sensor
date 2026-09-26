@@ -36,6 +36,10 @@ log = logging.getLogger("switchbot")
 RX_UUID = "cba20002-224d-11e6-9fb8-0002a5d5c51b"   # 端末 -> デバイス (書き込み)
 TX_UUID = "cba20003-224d-11e6-9fb8-0002a5d5c51b"   # デバイス -> 端末 (通知)
 
+class DeviceNotFound(RuntimeError):
+    """スキャンしても対象が見つからなかった。再試行の価値がある。"""
+
+
 MAGIC = b"\x57\x0f"          # マジックナンバー + 拡張コマンド
 CMD_SET = b"\x47\x01"        # 0x570F4701 電球の状態と色を設定
 CMD_READ = b"\x48\x01"       # 0x570F4801 電球の状態を読む
@@ -147,29 +151,51 @@ async def _send_once(device, packet, timeout):
         return resp
 
 
-async def send_command(mac, packet, timeout=10.0, attempts=3):
+async def find_device(mac, timeout=15.0):
+    """電球を探す。見つからなければ None。
+
+    2通りの探し方を試す。find_device_by_address は目的のアドレスが見つかった
+    時点で打ち切るが、BlueZ の状態によっては何も返さないことがある。その場合、
+    一覧を取る discover でなら拾えることがあるため、両方当たる。
+    """
+    device = await BleakScanner.find_device_by_address(mac, timeout=timeout)
+    if device is not None:
+        return device
+
+    log.info("見つからないので、一覧を取って探し直します")
+    for found in await BleakScanner.discover(timeout=timeout):
+        if found.address.lower() == mac.lower():
+            return found
+    return None
+
+
+async def send_command(mac, packet, timeout=10.0, attempts=3, scan_timeout=15.0):
     """BLE 接続してコマンドを送り、通知で返る応答を待つ。
 
-    BlueZ は直前の接続が切れきる前に繋ぎ直すと接続を中断することがある。
-    一過性のエラーは間隔を空けて再試行する。
-    """
-    log.info("デバイスを探しています: %s", mac)
-    device = await BleakScanner.find_device_by_address(mac, timeout=15.0)
-    if device is None:
-        raise RuntimeError(
-            f"{mac} が見つかりません。電源と電波の届く範囲を確認してください")
+    発見と接続の両方を再試行する。BlueZ は時間とともに調子を崩し、実際に
+    8時間にわたって発見に失敗し続けた (ラズパイの再起動で復旧した)。発見を
+    1回しか試さないと、そこで諦めてしまう。
 
+    接続の方も、直前の接続が切れきる前に繋ぎ直すと中断されることがある。
+    """
     last = None
     for attempt in range(1, attempts + 1):
         try:
-            log.info("接続しています (%d/%d)", attempt, attempts)
+            log.info("デバイスを探しています: %s (%d/%d)", mac, attempt, attempts)
+            device = await find_device(mac, scan_timeout)
+            if device is None:
+                raise DeviceNotFound(
+                    f"{mac} が見つかりません。電源と電波の届く範囲を確認してください")
+
+            log.info("接続しています")
             return await _send_once(device, packet, timeout)
         except Exception as e:
             last = e
-            if not _is_transient(e) or attempt == attempts:
+            retryable = isinstance(e, DeviceNotFound) or _is_transient(e)
+            if not retryable or attempt == attempts:
                 raise
             wait = 2 * attempt
-            log.warning("接続に失敗しました (%s) -- %d秒後に再試行します", e, wait)
+            log.warning("%s -- %d秒後に再試行します", e, wait)
             await asyncio.sleep(wait)
     raise last
 

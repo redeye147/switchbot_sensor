@@ -2,6 +2,9 @@
 Description=Set the SwitchBot bulb colour from the weather forecast
 After=network-online.target bluetooth.target bluetooth.service
 Wants=network-online.target bluetooth.service
+# 再試行の上限。StartLimit* は [Service] ではなく [Unit] に置く。
+StartLimitIntervalSec=1800
+StartLimitBurst=5
 
 [Service]
 Type=oneshot
@@ -11,5 +14,9 @@ WorkingDirectory=/home/pi/switchbot_sensor
 Environment=PYTHONPATH=
 ExecStartPre=/home/pi/switchbot_sensor/wait_for_bluetooth.sh 60
 ExecStart=/home/pi/switchbot_sensor/venv/bin/python /home/pi/switchbot_sensor/weather_lamp.py
+# 失敗しても次の正時まで1時間放置しないよう、少し間を置いてやり直す。
+# BlueZ は一過性に不調になるため、次の回で通ることが多い。
+Restart=on-failure
+RestartSec=120
 StandardOutput=journal
 StandardError=journal
